@@ -3717,12 +3717,14 @@ llama_memory_breakdown llama_context::memory_breakdown() const {
             ggml_backend_t             backend = backends[i].get();
             ggml_backend_buffer_type_t buft    = ggml_backend_sched_get_buffer_type(sched.get(), backend);
             ret[buft].compute += backend_buf_exp_size[i];
+            ret[buft].compute += ggml_backend_sched_get_prefetch_buffer_size(sched.get(), backend); // DenseX: prefetch slots
         }
     } else {
         for (const auto & backend_ptr : backends) {
             ggml_backend_t             backend = backend_ptr.get();
             ggml_backend_buffer_type_t buft    = ggml_backend_sched_get_buffer_type(sched.get(), backend);
             ret[buft].compute += ggml_backend_sched_get_buffer_size(sched.get(), backend);
+            ret[buft].compute += ggml_backend_sched_get_prefetch_buffer_size(sched.get(), backend); // DenseX: prefetch slots
         }
     }
     return ret;

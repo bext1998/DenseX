@@ -1001,7 +1001,9 @@ struct ggml_backend_sched {
     int prefetch_backend_id;           // the split backend that owns the slots
     ggml_backend_t prefetch_backend;   // copy backend on the same device
     ggml_backend_buffer_t prefetch_bufs[GGML_SCHED_MAX_PREFETCH_SLOTS];
-    size_t prefetch_buf_size;
+    size_t prefetch_buf_size;          // allocated size of each slot
+    size_t prefetch_need_size;         // slot size required by the last planned graph
+    bool prefetch_warned_pageable;
     ggml_backend_event_t prefetch_copied[GGML_SCHED_MAX_PREFETCH_SLOTS];   // slot filled
     ggml_backend_event_t prefetch_consumed[GGML_SCHED_MAX_PREFETCH_SLOTS]; // slot no longer read
     int * prefetch_split_ids;          // [n_prefetch] split index in prefetch order
@@ -1883,9 +1885,16 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
     }
 }
 
+// DenseX: splits whose prefetched weights exceed this multiple of the median split are copied on demand,
+// so a single large split (e.g. an output matrix kept on the host) does not inflate every slot
+#ifndef GGML_SCHED_PREFETCH_MAX_RATIO
+#define GGML_SCHED_PREFETCH_MAX_RATIO 4
+#endif
+
 // DenseX: decide which host weights are prefetched and place their device copies in the prefetch slots
 // must run after ggml_backend_sched_split_graph and before the graph is allocated, so ggml-alloc skips these copies
-static void ggml_backend_sched_prefetch_plan(ggml_backend_sched_t sched) {
+// alloc = false (no-alloc reserve, e.g. -fit) only records the slot size the graph needs
+static void ggml_backend_sched_prefetch_plan(ggml_backend_sched_t sched, bool alloc) {
     sched->n_prefetch = 0;
     for (int i = 0; i < sched->n_splits; i++) {
         sched->splits[i].prefetch_id = -1;
@@ -1940,17 +1949,38 @@ static void ggml_backend_sched_prefetch_plan(ggml_backend_sched_t sched) {
         return !shared.count(cpy) && ggml_backend_buft_get_alloc_size(buft, cpy) == ggml_nbytes(input);
     };
 
-    size_t max_size = 0;
+    std::vector<size_t> split_size(sched->n_splits, 0);
+    std::vector<size_t> sizes;
     for (int i = 0; i < sched->n_splits; i++) {
         struct ggml_backend_sched_split * split = &sched->splits[i];
-        size_t size = 0;
         for (int j = 0; j < split->n_inputs; j++) {
             if (eligible(split, i, split->inputs[j])) {
-                size += GGML_PAD(ggml_nbytes(split->inputs[j]), align);
+                split_size[i] += GGML_PAD(ggml_nbytes(split->inputs[j]), align);
             }
         }
-        if (size == 0) {
+        if (split_size[i] > 0) {
+            sizes.push_back(split_size[i]);
+        }
+    }
+    if (sizes.empty()) {
+        return;
+    }
+    std::nth_element(sizes.begin(), sizes.begin() + sizes.size()/2, sizes.end());
+    const size_t size_limit = GGML_SCHED_PREFETCH_MAX_RATIO * sizes[sizes.size()/2];
+
+    size_t max_size = 0;
+    int n_pageable = 0;
+    ggml_backend_buffer_type_t pinned_buft = ggml_backend_dev_host_buffer_type(ggml_backend_get_device(sched->backends[pb]));
+    for (int i = 0; i < sched->n_splits; i++) {
+        struct ggml_backend_sched_split * split = &sched->splits[i];
+        const size_t size = split_size[i];
+        if (size == 0 || size > size_limit) {
             continue;
+        }
+        for (int j = 0; j < split->n_inputs; j++) {
+            if (eligible(split, i, split->inputs[j]) && ggml_backend_buffer_get_type(split->inputs[j]->buffer) != pinned_buft) {
+                n_pageable++;
+            }
         }
         if (sched->n_prefetch >= sched->prefetch_capacity) {
             sched->prefetch_capacity = std::max(16, 2*sched->prefetch_capacity);
@@ -1963,6 +1993,20 @@ static void ggml_backend_sched_prefetch_plan(ggml_backend_sched_t sched) {
     }
     if (sched->n_prefetch == 0) {
         return;
+    }
+    sched->prefetch_need_size = max_size;
+    if (!alloc) {
+        // no-alloc reserve: nothing is placed in the slots, the copies stay in the measured compute buffer
+        for (int k = 0; k < sched->n_prefetch; k++) {
+            sched->splits[sched->prefetch_split_ids[k]].prefetch_id = -1;
+        }
+        sched->n_prefetch = 0;
+        return;
+    }
+    if (n_pageable > 0 && !sched->prefetch_warned_pageable) {
+        sched->prefetch_warned_pageable = true;
+        GGML_LOG_WARN("%s: %d prefetched weights are not in pinned host memory, their copies block the CPU thread"
+            " (llama.cpp: use --load-mode none)\n", __func__, n_pageable);
     }
 
     if (max_size > sched->prefetch_buf_size) {
@@ -1988,7 +2032,7 @@ static void ggml_backend_sched_prefetch_plan(ggml_backend_sched_t sched) {
         char * addr = (char *) ggml_backend_buffer_get_base(buf);
         for (int j = 0; j < split->n_inputs; j++) {
             ggml_tensor * input = split->inputs[j];
-            if (eligible(split, i, input)) {
+            if (eligible(split, i, input)) { // same set as split_size[i], which passed the size limit
                 enum ggml_status st = ggml_backend_tensor_alloc(buf, tensor_copy(input, split->backend_id, sched->cur_copy), addr);
                 GGML_ASSERT(st == GGML_STATUS_SUCCESS);
                 addr += GGML_PAD(ggml_nbytes(input), align);
@@ -2288,7 +2332,7 @@ void ggml_backend_sched_reserve_size(ggml_backend_sched_t sched, struct ggml_cgr
     ggml_backend_sched_synchronize(sched);
 
     ggml_backend_sched_split_graph(sched, measure_graph);
-    ggml_backend_sched_prefetch_plan(sched);
+    ggml_backend_sched_prefetch_plan(sched, false);
 
     ggml_gallocr_reserve_n_size(sched->galloc, &sched->graph, sched->node_backend_ids, sched->leaf_backend_ids, sizes);
 }
@@ -2300,7 +2344,7 @@ bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph *
     ggml_backend_sched_synchronize(sched);
 
     ggml_backend_sched_split_graph(sched, measure_graph);
-    ggml_backend_sched_prefetch_plan(sched);
+    ggml_backend_sched_prefetch_plan(sched, true);
 
     if (!ggml_gallocr_reserve_n(sched->galloc, &sched->graph, sched->node_backend_ids, sched->leaf_backend_ids)) {
         return false;
@@ -2320,7 +2364,7 @@ bool ggml_backend_sched_alloc_graph(ggml_backend_sched_t sched, struct ggml_cgra
     sched->next_copy = (sched->next_copy + 1) % sched->n_copies;
 
     ggml_backend_sched_split_graph(sched, graph);
-    ggml_backend_sched_prefetch_plan(sched);
+    ggml_backend_sched_prefetch_plan(sched, true);
 
     if (!ggml_backend_sched_alloc_splits(sched)) {
         return false;
@@ -2421,6 +2465,17 @@ size_t ggml_backend_sched_get_buffer_size(ggml_backend_sched_t sched, ggml_backe
     GGML_ASSERT(backend_index >= 0 && backend_index < sched->n_backends);
 
     return ggml_gallocr_get_buffer_size(sched->galloc, backend_index);
+}
+
+size_t ggml_backend_sched_get_prefetch_buffer_size(ggml_backend_sched_t sched, ggml_backend_t backend) {
+    GGML_ASSERT(sched);
+    int backend_index = ggml_backend_sched_backend_id(sched, backend);
+    GGML_ASSERT(backend_index >= 0 && backend_index < sched->n_backends);
+
+    if (sched->prefetch_slots == 0 || backend_index != sched->prefetch_backend_id) {
+        return 0;
+    }
+    return sched->prefetch_slots * std::max(sched->prefetch_buf_size, sched->prefetch_need_size);
 }
 
 void ggml_backend_sched_set_tensor_backend(ggml_backend_sched_t sched, struct ggml_tensor * node, ggml_backend_t backend) {
