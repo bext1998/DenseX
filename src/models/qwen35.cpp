@@ -662,7 +662,25 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;
     ggml_tensor * head_s = layer.nextn.shared_head_head ? layer.nextn.shared_head_head_s : model.output_s;
     GGML_ASSERT(head_w && "QWEN35 MTP: missing LM head (nextn.shared_head_head or model.output)");
-    cur = build_lora_mm(head_w, cur, head_s);
+
+    // DenseX: DENSEX_DRAFT_VOCAB=N drafts over the first N token ids only (a view of the head's first N rows,
+    // no copy); the other logits are -inf. Output stays lossless because the target verifies every draft;
+    // only the acceptance rate can change.
+    static const int64_t n_draft_vocab = [] {
+        const char * env = getenv("DENSEX_DRAFT_VOCAB");
+        return env ? (int64_t) atoll(env) : (int64_t) 0;
+    }();
+    const int64_t n_vocab_head = head_w->ne[1];
+    if (n_draft_vocab > 0 && n_draft_vocab < n_vocab_head) {
+        GGML_ASSERT(head_s == nullptr && "DENSEX_DRAFT_VOCAB: per-row head scales are not supported");
+        ggml_tensor * head_v = ggml_view_2d(ctx0, head_w, head_w->ne[0], n_draft_vocab, head_w->nb[1], 0);
+        cur = build_lora_mm(head_v, cur, nullptr);
+        ggml_tensor * rest = ggml_fill(ctx0,
+                ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_vocab_head - n_draft_vocab, cur->ne[1]), -INFINITY);
+        cur = ggml_concat(ctx0, cur, rest, 0);
+    } else {
+        cur = build_lora_mm(head_w, cur, head_s);
+    }
     cb(cur, "result_output", -1);
 
     res->t_logits = cur;
