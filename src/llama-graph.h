@@ -289,6 +289,11 @@ public:
     ggml_tensor * s_copy_main; // I32 [n_seqs]
     ggml_tensor * s_copy_tail; // I32 [n_rs - 1]
 
+    // DenseX deferred-commit inputs (only created when the memory runs the deferred mode):
+    // per-seq pending rows to replay, and the conv history window indices [n_pend .. n_pend + K - 2]
+    ggml_tensor * gdn_n_pend   = nullptr; // I32 [n_seqs]
+    ggml_tensor * gdn_conv_idx = nullptr; // I32 [conv_kernel_size - 1]
+
     const llama_memory_recurrent_context * mctx;
 
     // used in view offsets, need to match for valid graph reuse

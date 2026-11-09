@@ -385,6 +385,14 @@ enum class gdn_path { ar, slice32_one_block, slice32_two_blocks, slice64, whole_
 
 static gdn_path select_gdn_mma_path(int device, const ggml_cuda_gdn_mma_args & a) {
     GGML_ASSERT(device >= 0 && device < GGML_CUDA_MAX_DEVICES);
+    // DenseX diagnostic: force the AR path so the unfused AR and the deferred-commit kernels can be
+    // compared bit-for-bit against the MMA path (GGML_GDN_DISABLE_MMA=1)
+    {
+        const char * env = getenv("GGML_GDN_DISABLE_MMA");
+        if (env != nullptr && atoi(env) != 0) {
+            return gdn_path::ar;
+        }
+    }
     if (!a.eligible || a.H_k != 16 || (a.H != 16 && a.H != 32 && a.H != 48 && a.H != 64) || a.n_tokens < 64 ||
         a.n_tokens > INT64_MAX - 32 || a.rq3 <= 0 || a.n_seqs <= 0 || a.n_seqs > INT_MAX / (a.H * 4)) {
         return gdn_path::ar;

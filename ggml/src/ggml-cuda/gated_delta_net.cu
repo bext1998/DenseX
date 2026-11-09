@@ -393,7 +393,7 @@ void ggml_cuda_op_gated_delta_net_fused_cache(
 }
 
 // DenseX: gated_delta_net with deferred commit (GGML_OP_GATED_DELTA_NET_DEFERRED).
-// Scalar gate only, autoregressive path only (T <= 32, enforced by the backend's supports_op).
+// Scalar gate only; the token loop is autoregressive for any batch length (long batches are slower than MMA, accepted).
 // The first n_pend[sequence] pending rows are replayed into the state with the same update expression,
 // lane split and warp reduction as the current-batch loop (no attention contraction, no q), the
 // replayed state is written to state_j, then the current batch is processed without writing a final
@@ -497,11 +497,16 @@ gated_delta_net_deferred_cuda(const float * q,
         }
     }
 
-    // the state the current batch is evaluated from (state after the pending rows)
+    // committed prefix: after the pending rows and the first p = max(0, n_tokens - C) batch tokens.
+    // p == 0 -> the post-pending state (written here); otherwise the state is written once more after
+    // batch token p - 1 inside the loop below
+    const int p0 = n_tokens > C ? (int) (n_tokens - C) : 0;
+    if (p0 == 0) {
 #pragma unroll
-    for (int r = 0; r < rows_per_lane; r++) {
-        const int i          = r * lanes_per_col + lane_in_col;
-        state_j[col * S_v + i] = s_shard[r];
+        for (int r = 0; r < rows_per_lane; r++) {
+            const int i          = r * lanes_per_col + lane_in_col;
+            state_j[col * S_v + i] = s_shard[r];
+        }
     }
 
     // current batch: same loop as the plain op, minus the final-state/snapshot write
@@ -516,20 +521,22 @@ gated_delta_net_deferred_cuda(const float * q,
 
         const float beta_val = *beta_t;
 
-        // pack this batch's inputs into the pending rows: k is written by head h == hk (compact layout),
-        // each head writes its own v/g/beta; rows >= n_tokens of the same call are caller-owned
-        float * p_row = pend_new + (sequence * C + t) * R;
-        if (h_idx < H_k && col == 0 && lane_in_col == 0) {
-            for (int i = 0; i < S_v; i++) {
-                p_row[h_idx * S_v + i] = k_t[i];
+        // pack this batch's LAST min(n_tokens, C) token inputs into the pending rows (row t - p0):
+        // k is written by head h == hk (compact layout), each head writes its own v/g/beta
+        if (t >= p0) {
+            float * p_row = pend_new + (sequence * C + (t - p0)) * R;
+            if (h_idx < H_k && col == 0 && lane_in_col == 0) {
+                for (int i = 0; i < S_v; i++) {
+                    p_row[h_idx * S_v + i] = k_t[i];
+                }
             }
-        }
-        if (lane_in_col == 0) {
-            p_row[H_k * S_v + h_idx * S_v + col] = v_t[col];
-        }
-        if (col == 0 && lane_in_col == 0) {
-            p_row[(H_k + H) * S_v + h_idx]         = *g_t;
-            p_row[(H_k + H) * S_v + H + h_idx]     = beta_val;
+            if (lane_in_col == 0) {
+                p_row[H_k * S_v + h_idx * S_v + col] = v_t[col];
+            }
+            if (col == 0 && lane_in_col == 0) {
+                p_row[(H_k + H) * S_v + h_idx]         = *g_t;
+                p_row[(H_k + H) * S_v + H + h_idx]     = beta_val;
+            }
         }
 
         float k_reg[rows_per_lane];
@@ -566,8 +573,17 @@ gated_delta_net_deferred_cuda(const float * q,
         }
 
         attn_data += S_v * H;
+
+        // committed prefix state: after batch token p0 - 1 (p0 >= 1; p0 == 0 was written after the replay)
+        if (t + 1 == p0) {
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                const int i          = r * lanes_per_col + lane_in_col;
+                state_j[col * S_v + i] = s_shard[r];
+            }
+        }
     }
-    // the batch's final state is discarded: it is re-derived from state_j + pending in the next call
+    // the batch's final state is discarded: it is re-derived from the state output + pending in the next call
 }
 
 static void launch_gated_delta_net_deferred(
@@ -651,7 +667,6 @@ void ggml_cuda_op_gated_delta_net_deferred(ggml_backend_cuda_context & ctx, ggml
     const int64_t H_k      = neq1;
 
     GGML_ASSERT(src_g->ne[0] == 1); // scalar gate only
-    GGML_ASSERT(n_tokens <= 32);    // autoregressive path only (see supports_op)
 
     GGML_ASSERT(neq1 == nek1);
     const int64_t neqk1 = neq1;

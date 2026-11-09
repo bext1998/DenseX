@@ -5040,14 +5040,16 @@ struct test_gated_delta_net_deferred : public test_case {
         k = ggml_l2_norm(ctx, k, 1e-6f);
         ggml_tensor * out = ggml_gated_delta_net_deferred(ctx, q, k, v, g, beta, state, pend, n_pend, C);
 
-        // rows >= T of pend_new are undefined; only compare attn, state_j and the first T packed rows
+        // rows >= min(T, C) of pend_new are undefined; only compare attn, the state output and the first
+        // min(T, C) packed rows
         const int64_t attn_elems   = head_size*head_count*T*n_seqs;
         const int64_t state_elems  = head_size*head_size*head_count*n_seqs;
+        const int64_t n_pend_rows  = T < C ? T : C;
         ggml_tensor * attn_v  = ggml_view_1d(ctx, out, attn_elems, 0);
         ggml_tensor * state_v = ggml_view_1d(ctx, out, state_elems, attn_elems*sizeof(float));
         ggml_tensor * pend_v  = ggml_reshape_1d(ctx, ggml_cont(ctx,
-                                    ggml_view_3d(ctx, out, R, T, 1, R*sizeof(float), C*R*sizeof(float),
-                                                 (attn_elems + state_elems)*sizeof(float))), R*T);
+                                    ggml_view_3d(ctx, out, R, n_pend_rows, 1, R*sizeof(float), C*R*sizeof(float),
+                                                 (attn_elems + state_elems)*sizeof(float))), R*n_pend_rows);
         return ggml_concat(ctx, ggml_concat(ctx, attn_v, state_v, 0), pend_v, 0);
     }
 
@@ -12149,11 +12151,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
-    // GATED_DELTA_NET_DEFERRED: model shape, T <= 32 (AR path), C = 17, j in {0,1,2,T-1,T,C} (dedup)
-    for (int64_t T : { 1, 2, 4, 9, 17 }) {
-        const std::set<int64_t> js = { 0, 1, 2, T - 1, T, 17 }; // dedup
-        for (int64_t j : js) {
-            test_cases.emplace_back(new test_gated_delta_net_deferred(16, 48, 128, 1, T, 17, j));
+    // GATED_DELTA_NET_DEFERRED: model shape, j in {0,1,2,T-1,T,C} (dedup, j <= C)
+    for (int64_t T : { 1, 2, 4, 9, 17, 33, 64, 512 }) {
+        for (int64_t C : { 9, 17 }) {
+            const std::set<int64_t> js = { 0, 1, 2, T - 1, T, C }; // dedup
+            for (int64_t j : js) {
+                if (j > C) continue; // n_pend cannot exceed the capacity
+                test_cases.emplace_back(new test_gated_delta_net_deferred(16, 48, 128, 1, T, C, j));
+            }
         }
     }
 

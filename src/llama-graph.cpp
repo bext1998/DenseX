@@ -382,6 +382,43 @@ void llm_graph_input_cls::set_input(const llama_ubatch * ubatch) {
     }
 }
 
+// DenseX deferred commit: fill the pending-row count and conv window index inputs from the memory
+// module's per-seq bookkeeping; reading the pending rollback consumes it, and this forward's pending
+// rows become the next batch's pending
+static void llama_gdn_set_deferred_inputs(
+        llm_graph_input_rs * inp_rs, const llama_ubatch * ubatch, const llama_memory_recurrent_context * mctx) {
+    if (!inp_rs->gdn_n_pend) {
+        return;
+    }
+    GGML_ASSERT(ggml_backend_buffer_is_host(inp_rs->gdn_n_pend->buffer));
+    GGML_ASSERT(ggml_backend_buffer_is_host(inp_rs->gdn_conv_idx->buffer));
+
+    int32_t * np_data = (int32_t *) inp_rs->gdn_n_pend->data;
+    const int64_t n_seqs = inp_rs->gdn_n_pend->ne[0];
+    GGML_ASSERT(n_seqs == ubatch->n_seqs);
+
+    std::vector<bool> done(n_seqs, false);
+    for (int i = 0; i < ubatch->n_tokens; ++i) {
+        for (int u = 0; u < ubatch->n_seq_id[i]; ++u) {
+            const llama_seq_id seq = ubatch->seq_id[i][u];
+            const int32_t sidx = ubatch->seq_idx[seq];
+            if (sidx < 0 || sidx >= n_seqs || done[sidx]) {
+                continue;
+            }
+            np_data[sidx] = mctx->get_n_pend(seq);
+            mctx->commit_n_stored(seq, (int32_t) ubatch->n_seq_tokens);
+            done[sidx] = true;
+        }
+    }
+
+    // conv history window rows for the next forward: [n_pend .. n_pend + K - 2] (single-sequence)
+    int32_t * ci_data = (int32_t *) inp_rs->gdn_conv_idx->data;
+    const int64_t n_idx = inp_rs->gdn_conv_idx->ne[0];
+    for (int64_t i = 0; i < n_idx; ++i) {
+        ci_data[i] = np_data[0] + (int32_t) i;
+    }
+}
+
 void llm_graph_input_rs::set_input(const llama_ubatch * ubatch) {
     GGML_UNUSED(ubatch);
 
@@ -396,6 +433,8 @@ void llm_graph_input_rs::set_input(const llama_ubatch * ubatch) {
             data[i] = mctx->s_copy(i);
         }
     }
+
+    llama_gdn_set_deferred_inputs(this, ubatch, mctx);
 }
 
 bool llm_graph_input_rs::can_reuse(const llm_graph_params & params) {
@@ -411,6 +450,14 @@ bool llm_graph_input_rs::can_reuse(const llm_graph_params & params) {
 
     res &= head == mctx->get_head();
     res &= rs_z == mctx->get_rs_z();
+
+    // DenseX: the deferred inputs must keep matching, and the deferred flag must not flip
+    if (gdn_n_pend) {
+        res &= mctx->get_deferred();
+        res &= gdn_n_pend->ne[0] == (int64_t) params.ubatch.n_seqs;
+    } else {
+        res &= !mctx->get_deferred();
+    }
 
     return res;
 }
@@ -1171,6 +1218,8 @@ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
             data[i] = mctx->get_recr()->s_copy(i);
         }
     }
+
+    llama_gdn_set_deferred_inputs(inp_rs.get(), ubatch, mctx->get_recr());
 }
 
 bool llm_graph_input_mem_hybrid::can_reuse(const llm_graph_params & params) {
@@ -1191,6 +1240,14 @@ bool llm_graph_input_mem_hybrid::can_reuse(const llm_graph_params & params) {
 
     res &= inp_rs->head == mctx->get_recr()->get_head();
     res &= inp_rs->rs_z == mctx->get_recr()->get_rs_z();
+
+    // DenseX deferred commit: the deferred inputs must keep matching, and the flag must not flip
+    if (inp_rs->gdn_n_pend) {
+        res &= mctx->get_recr()->get_deferred();
+        res &= inp_rs->gdn_n_pend->ne[0] == (int64_t) params.ubatch.n_seqs;
+    } else {
+        res &= !mctx->get_recr()->get_deferred();
+    }
 
     return res;
 }
@@ -1214,6 +1271,8 @@ void llm_graph_input_mem_hybrid_k::set_input(const llama_ubatch * ubatch) {
             data[i] = mctx->get_recr()->s_copy(i);
         }
     }
+
+    llama_gdn_set_deferred_inputs(inp_rs.get(), ubatch, mctx->get_recr());
 }
 
 bool llm_graph_input_mem_hybrid_k::can_reuse(const llm_graph_params & params) {
@@ -1233,6 +1292,14 @@ bool llm_graph_input_mem_hybrid_k::can_reuse(const llm_graph_params & params) {
 
     res &= inp_rs->head == mctx->get_recr()->get_head();
     res &= inp_rs->rs_z == mctx->get_recr()->get_rs_z();
+
+    // DenseX deferred commit: the deferred inputs must keep matching, and the flag must not flip
+    if (inp_rs->gdn_n_pend) {
+        res &= mctx->get_recr()->get_deferred();
+        res &= inp_rs->gdn_n_pend->ne[0] == (int64_t) params.ubatch.n_seqs;
+    } else {
+        res &= !mctx->get_recr()->get_deferred();
+    }
 
     return res;
 }
@@ -1287,6 +1354,8 @@ void llm_graph_input_mem_hybrid_iswa::set_input(const llama_ubatch * ubatch) {
             data[i] = mctx->get_recr()->s_copy(i);
         }
     }
+
+    llama_gdn_set_deferred_inputs(inp_rs.get(), ubatch, mctx->get_recr());
 }
 
 bool llm_graph_input_mem_hybrid_iswa::can_reuse(const llm_graph_params & params) {
@@ -1320,6 +1389,14 @@ bool llm_graph_input_mem_hybrid_iswa::can_reuse(const llm_graph_params & params)
 
     res &= inp_rs->head == mctx->get_recr()->get_head();
     res &= inp_rs->rs_z == mctx->get_recr()->get_rs_z();
+
+    // DenseX deferred commit: the deferred inputs must keep matching, and the flag must not flip
+    if (inp_rs->gdn_n_pend) {
+        res &= mctx->get_recr()->get_deferred();
+        res &= inp_rs->gdn_n_pend->ne[0] == (int64_t) params.ubatch.n_seqs;
+    } else {
+        res &= !mctx->get_recr()->get_deferred();
+    }
 
     return res;
 }
@@ -3807,7 +3884,8 @@ ggml_tensor * llm_graph_context::build_rs(
 static std::unique_ptr<llm_graph_input_rs> build_rs_inp_impl(
            ggml_context * ctx0,
      const llama_ubatch & ubatch,
-    const llama_memory_recurrent_context * mctx_cur) {
+    const llama_memory_recurrent_context * mctx_cur,
+    const llama_hparams & hparams) {
 
     auto inp = std::make_unique<llm_graph_input_rs>(mctx_cur);
 
@@ -3821,6 +3899,18 @@ static std::unique_ptr<llm_graph_input_rs> build_rs_inp_impl(
     inp->s_copy_main = ggml_view_1d(ctx0, inp->s_copy, n_seqs, 0);
     inp->s_copy_tail = ggml_view_1d(ctx0, inp->s_copy, n_rs - 1, inp->s_copy->nb[0]);
 
+    // DenseX deferred commit: graph inputs for the pending-row count and the conv history window indices
+    if (mctx_cur->get_deferred()) {
+        inp->gdn_n_pend = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, ubatch.n_seqs);
+        ggml_set_input(inp->gdn_n_pend);
+        ggml_set_name(inp->gdn_n_pend, "rs_gdn_n_pend");
+
+        const int64_t conv_k = hparams.ssm_d_conv > 0 ? hparams.ssm_d_conv : 4;
+        inp->gdn_conv_idx = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, conv_k - 1);
+        ggml_set_input(inp->gdn_conv_idx);
+        ggml_set_name(inp->gdn_conv_idx, "rs_gdn_conv_idx");
+    }
+
     inp->head = mctx_cur->get_head();
     inp->rs_z = mctx_cur->get_rs_z();
 
@@ -3830,7 +3920,7 @@ static std::unique_ptr<llm_graph_input_rs> build_rs_inp_impl(
 llm_graph_input_rs * llm_graph_context::build_rs_inp() const {
     const auto * mctx_cur = static_cast<const llama_memory_recurrent_context *>(mctx);
 
-    auto inp = build_rs_inp_impl(ctx0, ubatch, mctx_cur);
+    auto inp = build_rs_inp_impl(ctx0, ubatch, mctx_cur, hparams);
 
     return (llm_graph_input_rs *) res->add_input(std::move(inp));
 }
@@ -3896,7 +3986,7 @@ ggml_tensor * llm_graph_context::build_rwkv_token_shift_store(
 llm_graph_input_mem_hybrid * llm_graph_context::build_inp_mem_hybrid() const {
     const auto * mctx_cur = static_cast<const llama_memory_hybrid_context *>(mctx);
 
-    auto inp_rs   = build_rs_inp_impl     (ctx0, ubatch, mctx_cur->get_recr());
+    auto inp_rs   = build_rs_inp_impl     (ctx0, ubatch, mctx_cur->get_recr(), hparams);
     auto inp_attn = build_attn_inp_kv_impl(ctx0, ubatch, hparams, cparams, mctx_cur->get_attn());
 
     auto inp = std::make_unique<llm_graph_input_mem_hybrid>(cparams, std::move(inp_attn), std::move(inp_rs), mctx_cur);
@@ -3907,7 +3997,7 @@ llm_graph_input_mem_hybrid * llm_graph_context::build_inp_mem_hybrid() const {
 llm_graph_input_mem_hybrid_k * llm_graph_context::build_inp_mem_hybrid_k() const {
     const auto * mctx_cur = static_cast<const llama_memory_hybrid_context *>(mctx);
 
-    auto inp_rs   = build_rs_inp_impl     (ctx0, ubatch, mctx_cur->get_recr());
+    auto inp_rs   = build_rs_inp_impl     (ctx0, ubatch, mctx_cur->get_recr(), hparams);
     auto inp_attn = build_attn_inp_k_impl(ctx0, ubatch, hparams, cparams, mctx_cur->get_attn());
 
     auto inp = std::make_unique<llm_graph_input_mem_hybrid_k>(cparams, std::move(inp_attn), std::move(inp_rs), mctx_cur);
@@ -3918,7 +4008,7 @@ llm_graph_input_mem_hybrid_k * llm_graph_context::build_inp_mem_hybrid_k() const
 llm_graph_input_mem_hybrid_iswa * llm_graph_context::build_inp_mem_hybrid_iswa() const {
     const auto * mctx_cur = static_cast<const llama_memory_hybrid_iswa_context *>(mctx);
 
-    auto inp_rs = build_rs_inp_impl(ctx0, ubatch, mctx_cur->get_recr());
+    auto inp_rs = build_rs_inp_impl(ctx0, ubatch, mctx_cur->get_recr(), hparams);
 
     // build iswa attention input
     const auto * attn_ctx = mctx_cur->get_attn();

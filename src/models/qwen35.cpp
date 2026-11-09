@@ -447,7 +447,10 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn_linear(
 
     // if head keys and value keys are different, repeat to force tensors into matching shapes
     // note: need explicit repeat only if we are not using the fused GDN.
-    if (num_k_heads != num_v_heads && (!cparams.fused_gdn_ar || !cparams.fused_gdn_ch)) {
+    // DenseX deferred commit keeps the compact H_k heads: the deferred op maps v head h to k head
+    // h % H_k itself, and the pending-row layout stores compact k
+    const bool gdn_deferred = inp->mctx->get_deferred();
+    if (num_k_heads != num_v_heads && !gdn_deferred && (!cparams.fused_gdn_ar || !cparams.fused_gdn_ch)) {
         GGML_ASSERT(num_v_heads % num_k_heads == 0);
         q_conv = ggml_repeat_4d(ctx0, q_conv, head_k_dim, num_v_heads, n_seq_tokens, n_seqs);
         k_conv = ggml_repeat_4d(ctx0, k_conv, head_k_dim, num_v_heads, n_seq_tokens, n_seqs);

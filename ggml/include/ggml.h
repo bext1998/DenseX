@@ -2684,8 +2684,14 @@ extern "C" {
     //                                      (not op params), so it can change between replays of the same graph
     // output (single 1-D F32 tensor, in this order; take views at these offsets):
     //   attn    : [S, H_v, T, n_seqs]      output computed from the state after the pending rows
-    //   state_j : [S, S, H_v, n_seqs]      state after applying the first j = n_pend pending rows
-    //   pend_new: [R, C, n_seqs]           this batch's inputs packed into rows 0..T-1; rows >= T are undefined
+    //   state   : [S, S, H_v, n_seqs]      state after applying the first j = n_pend pending rows and then
+    //                                      the first p = max(0, T - capacity) tokens of this batch; with
+    //                                      T <= capacity this is just the post-pending state. The batch's
+    //                                      final state is discarded: commit is deferred, the caller keeps
+    //                                      the batch's last min(T, capacity) inputs and feeds the accepted
+    //                                      prefix back as pending in the next call.
+    //   pend_new: [R, C, n_seqs]           the inputs of this batch's LAST min(T, C) tokens packed into rows
+    //                                      0..min(T, C)-1; rows >= min(T, C) are undefined
     GGML_API struct ggml_tensor * ggml_gated_delta_net_deferred(
             struct ggml_context * ctx,
             struct ggml_tensor  * q,

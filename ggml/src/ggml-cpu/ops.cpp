@@ -11412,11 +11412,14 @@ void ggml_compute_forward_gated_delta_net(
 
 // ggml_compute_forward_gated_delta_net_deferred
 //
-// Output layout: attention scores | state after the pending rows | packed pending rows of this batch.
+// Output layout: attention scores | committed-prefix state | packed pending rows of this batch.
 // The pending rows are replayed into the working state (same per-token update as ggml_gated_delta_net,
-// without the attention contraction), the replayed state is written to state_j, then the new batch is
-// processed on top of it and its final state is discarded. Each thread owns whole (head, sequence)
-// matrices, so no synchronization is needed.
+// without the attention contraction), the resulting state is written to the state output, then the new
+// batch is processed on top of it. Let p = max(0, n_tokens - capacity): the state output is updated once
+// more after the first p batch tokens, so it always holds the state of the committed prefix
+// [pending | batch tokens 0..p-1]; the batch's LAST min(n_tokens, capacity) token inputs are packed into
+// the pending rows 0..min(n_tokens, capacity)-1 and the batch's final state is discarded. Each thread
+// owns whole (head, sequence) matrices, so no synchronization is needed.
 static void ggml_compute_forward_gated_delta_net_deferred_one_chunk(
     const ggml_compute_params * params,
     ggml_tensor * dst,
@@ -11488,9 +11491,9 @@ static void ggml_compute_forward_gated_delta_net_deferred_one_chunk(
         float * s_out = state_work;
 
         const float * s_in = state_in_base + iv3 * state_seq_stride + iv1 * S_v * S_v;
-        // state_j output keeps the state after the pending rows; the batch runs on the scratch copy
-        float * state_j_out = state_j_base + (iv3 * H + iv1) * S_v * S_v;
-        memcpy(state_j_out, s_in, S_v * S_v * sizeof(float));
+        // the state output keeps the state of the committed prefix; the batch runs on the scratch copy
+        float * state_out = state_j_base + (iv3 * H + iv1) * S_v * S_v;
+        memcpy(state_out, s_in, S_v * S_v * sizeof(float));
         memcpy(s_out, s_in, S_v * S_v * sizeof(float));
 
         // replay the first j pending rows into the state (no attention contraction, no q)
@@ -11515,8 +11518,10 @@ static void ggml_compute_forward_gated_delta_net_deferred_one_chunk(
                 ggml_vec_mad_f32(S_v, &s_out[j * S_v], k_d, delta[j]);
             }
         }
-        // state_j = state after the pending rows (replayed on the scratch buffer)
-        memcpy(state_j_out, s_out, S_v * S_v * sizeof(float));
+        // committed prefix: after the pending rows and the first p batch tokens. p == 0 -> post-pending
+        // state (already written above); otherwise the state is written once more after batch token p - 1
+        const int64_t p0 = n_tokens > C ? n_tokens - C : 0;
+        memcpy(state_out, s_out, S_v * S_v * sizeof(float));
 
         // attn output pointer for first token of this (head, seq)
         float * attn_data = attn_out_base + (iv3 * n_tokens * H + iv1) * S_v;
@@ -11529,19 +11534,21 @@ static void ggml_compute_forward_gated_delta_net_deferred_one_chunk(
             const float beta_val = *(const float *)((const char *)src_beta->data + iv3 * nbb3 + t * nbb2 + iv1 * nbb1);
             const float * g_d    =  (const float *)((const char *)src_g->data    + iv3 * nbg3 + t * nbg2 + iv1 * nbg1);
 
-            // pack this batch's inputs into the pending rows: k is written by the first H_k heads only
-            // (compact layout), each head writes its own v/g/beta
-            float * p_row = pend_new_base + (iv3 * C + t) * R;
-            if (iv1 < H_k) {
-                for (int64_t i = 0; i < S_v; ++i) {
-                    p_row[iv1 * S_v + i] = k_d[i];
+            // pack this batch's LAST min(n_tokens, C) token inputs into the pending rows (row t - p0):
+            // k is written by the first H_k heads only (compact layout), each head writes its own v/g/beta
+            if (t >= p0) {
+                float * p_row = pend_new_base + (iv3 * C + (t - p0)) * R;
+                if (iv1 < H_k) {
+                    for (int64_t i = 0; i < S_v; ++i) {
+                        p_row[iv1 * S_v + i] = k_d[i];
+                    }
                 }
+                for (int64_t i = 0; i < S_v; ++i) {
+                    p_row[S_v * H_k + iv1 * S_v + i] = v_d[i];
+                }
+                p_row[S_v * (H_k + H) + iv1]     = g_d[0];
+                p_row[S_v * (H_k + H) + H + iv1] = beta_val;
             }
-            for (int64_t i = 0; i < S_v; ++i) {
-                p_row[S_v * H_k + iv1 * S_v + i] = v_d[i];
-            }
-            p_row[S_v * (H_k + H) + iv1]         = g_d[0];
-            p_row[S_v * (H_k + H) + H + iv1]     = beta_val;
 
             ggml_vec_scale_f32(S_v * S_v, s_out, expf(g_d[0]));
 
@@ -11563,7 +11570,12 @@ static void ggml_compute_forward_gated_delta_net_deferred_one_chunk(
 
             attn_data += S_v * H;
 
-            // the batch's final state is discarded: it is re-derived from state_j + pending in the next call
+            // committed prefix state: after batch token p0 - 1 (p0 >= 1; p0 == 0 was written after the replay)
+            if (t + 1 == p0) {
+                memcpy(state_out, s_out, S_v * S_v * sizeof(float));
+            }
+
+            // the batch's final state is discarded: it is re-derived from the state output + pending in the next call
         }
     }
 }
@@ -11571,7 +11583,6 @@ static void ggml_compute_forward_gated_delta_net_deferred_one_chunk(
 static void ggml_compute_forward_gated_delta_net_deferred_f32(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
-
     ggml_tensor * V = dst->src[2];
     int64_t nr = V->ne[1] * V->ne[3];
 

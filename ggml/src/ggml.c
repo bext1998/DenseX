@@ -6502,7 +6502,6 @@ struct ggml_tensor * ggml_gated_delta_net_deferred(
     GGML_ASSERT(n_pend->ne[0] == n_seqs);
 
     GGML_ASSERT(capacity >= 1);
-    GGML_ASSERT(n_tokens <= capacity); // pending rows of this batch must fit the fixed capacity
     GGML_ASSERT(pend->ne[1] == capacity);
 
     // output layout: attention scores | state after the pending rows | packed pending rows of this batch

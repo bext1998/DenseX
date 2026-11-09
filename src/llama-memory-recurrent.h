@@ -73,6 +73,14 @@ public:
     // number of recurrent-state snapshots per seq for rollback; tensors are widened to (1 + n_rs_seq) groups
     uint32_t n_rs_seq = 0;
 
+    // DenseX: deferred-commit mode (DENSEX_GDN_DEFERRED=1, GDN archs, single sequence). One physical
+    // base state per cell; the rollback-able token inputs of the last batch are kept in per-cell
+    // pending rows and replayed by the deferred GDN op on the next forward.
+    bool     gdn_deferred = false;
+    uint32_t gdn_C        = 0;              // pending row capacity (n_rs_seq + 1)
+    std::vector<ggml_tensor *> pend_l;      // per layer, [R_gdn * gdn_C, mem_size] F32
+    std::vector<int32_t> n_stored;          // per seq: pending rows stored by the last forward (<= gdn_C)
+
     // per-seq rollback index
     std::vector<uint32_t> rs_idx;
 
@@ -179,6 +187,12 @@ public:
     ggml_tensor * get_r_l(int32_t il) const;
     ggml_tensor * get_s_l(int32_t il) const;
     ggml_tensor * get_p_l(int32_t il) const;
+    ggml_tensor * get_pend_l(int32_t il) const;
+
+    // DenseX deferred-commit accessors; the graph inputs read them at set_input time
+    bool    get_deferred() const;
+    int32_t get_n_pend(int seq) const;                     // n_stored - pending rollback (consumes rs_idx)
+    void    commit_n_stored(int seq, int32_t n_new) const; // n_stored = min(n_new, gdn_C)
 
     int32_t s_copy(int i) const;
 

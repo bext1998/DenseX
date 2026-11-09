@@ -93,15 +93,15 @@ static compare_result compare(const float * a, const float * b, int64_t n) {
     return res;
 }
 
-// builds graph A: the plain op over [pend rows 0..j-1 | batch tokens], K = 1.
-// fills ref_attn (last T attention rows) and ref_state (final state after all j+T tokens).
-// with j_only = true, the op runs over only the first j pending rows (reference for state_j).
+// builds the reference graph A: the plain op over [pend rows 0..j-1 | the first n_batch batch tokens], K = 1.
+// the final state is the reference for the deferred op's state output with n_batch = p = max(0, T - C);
+// with n_batch = T the last T attention rows are the reference for the deferred op's attention output.
 static ggml_tensor * build_ref_old_op(ggml_context * ctx, const gdn_dims & d,
         const float * s0, const float * q_b, const float * k_b, const float * v_b,
         const float * g_b, const float * beta_b, const float * pend,
-        int64_t j, bool j_only,
+        int64_t j, int64_t n_batch,
         ggml_tensor ** out_attn, ggml_tensor ** out_state) {
-    const int64_t n_tok = j_only ? j : j + d.T;
+    const int64_t n_tok = j + n_batch;
     if (n_tok == 0) {
         *out_attn  = nullptr;
         *out_state = nullptr;
@@ -126,7 +126,7 @@ static ggml_tensor * build_ref_old_op(ggml_context * ctx, const gdn_dims & d,
         memcpy((char *) g->data + t*g->nb[2], p_row + d.S*(d.Hk + d.Hv), d.Hv*sizeof(float));
         memcpy((char *) beta->data + t*beta->nb[2], p_row + d.S*(d.Hk + d.Hv) + d.Hv, d.Hv*sizeof(float));
     }
-    if (!j_only) {
+    if (n_batch > 0) {
         memcpy((char *) q->data + j*q->nb[2], q_b, ggml_nbytes(q) - j*q->nb[2]);
         memcpy((char *) k->data + j*k->nb[2], k_b, ggml_nbytes(k) - j*k->nb[2]);
         memcpy((char *) v->data + j*v->nb[2], v_b, ggml_nbytes(v) - j*v->nb[2]);
@@ -142,10 +142,12 @@ static ggml_tensor * build_ref_old_op(ggml_context * ctx, const gdn_dims & d,
     return out;
 }
 
-static bool run_case(int64_t T, const std::set<int64_t> & js) {
+static bool run_case(int64_t T, int64_t C, const std::set<int64_t> & js) {
     gdn_dims d;
     d.T = T;
-    assert(d.T <= d.C);
+    d.C = C;
+    // committed prefix length: the state output covers [pending | the first p batch tokens]
+    const int64_t p0 = T > C ? T - C : 0;
 
     std::mt19937 gen(1234 + (int) T);
 
@@ -194,22 +196,24 @@ static bool run_case(int64_t T, const std::set<int64_t> & js) {
         memcpy(state_t->data, s0.data(), sz_state);
         memcpy(pend_t->data, pend.data(), d.pend_elems()*sizeof(float));
         ((int32_t *) n_pend_t->data)[0] = (int32_t) j;
+        GGML_ASSERT(j <= C);
 
         ggml_tensor * out_b = ggml_gated_delta_net_deferred(ctx, q_t, k_t, v_t, g_t, beta_t, state_t, pend_t, n_pend_t, d.C);
         ggml_tensor * b_attn  = ggml_view_1d(ctx, out_b, d.attn_elems(), 0);
         ggml_tensor * b_state = ggml_view_1d(ctx, out_b, d.state_elems(), d.attn_elems()*sizeof(float));
 
-        // graph A1: plain op over [pend 0..j-1 | batch]; references the last T attention rows
+        // graph A1: plain op over [pend 0..j-1 | the whole batch]; references the last T attention rows
         ggml_tensor * a1_attn = nullptr;
         ggml_tensor * a1_state = nullptr;
         ggml_tensor * out_a1 = build_ref_old_op(ctx, d, s0.data(), q_b.data(), k_b.data(), v_b.data(),
-                                                g_b.data(), beta_b.data(), pend.data(), j, false, &a1_attn, &a1_state);
+                                                g_b.data(), beta_b.data(), pend.data(), j, d.T, &a1_attn, &a1_state);
 
-        // graph A2: plain op over pend 0..j-1 only; the final state is the state_j reference
+        // graph A2: plain op over [pend 0..j-1 | the first p batch tokens]; the final state is the
+        // state output reference
         ggml_tensor * a2_attn = nullptr;
         ggml_tensor * a2_state = nullptr;
         ggml_tensor * out_a2 = build_ref_old_op(ctx, d, s0.data(), q_b.data(), k_b.data(), v_b.data(),
-                                                g_b.data(), beta_b.data(), pend.data(), j, true, &a2_attn, &a2_state);
+                                                g_b.data(), beta_b.data(), pend.data(), j, p0, &a2_attn, &a2_state);
 
         ggml_cgraph * graph = ggml_new_graph(ctx);
         ggml_build_forward_expand(graph, out_b);
@@ -242,6 +246,53 @@ static bool run_case(int64_t T, const std::set<int64_t> & js) {
                    i > 0 ? av[i-1] : 0.0f, i > 0 ? b_state_d[i-1] : 0.0f);
         }
 
+        // verify pend_new: rows 0..min(T,C)-1 hold the batch's LAST min(T,C) token inputs
+        {
+            const int64_t n_rows = d.T < d.C ? d.T : d.C;
+            const ggml_tensor * out_t = out_b; // 1-D packed: attn | state | pend_new
+            const float * pn = (const float *) out_t->data + d.attn_elems() + d.state_elems();
+            const int64_t R = d.R();
+            int64_t pn_diff = 0;
+            double pn_max = 0.0;
+            for (int64_t r = 0; r < n_rows; ++r) {
+                const int64_t tok = d.T - n_rows + r; // batch token index
+                const float * row = pn + r*R;
+                for (int64_t h = 0; h < d.Hk; ++h) {
+                    for (int64_t i = 0; i < d.S; ++i) {
+                        const float ref = k_b[tok*d.Hk*d.S + h*d.S + i];
+                        const float got = row[h*d.S + i];
+                        const double diff = std::abs((double) ref - (double) got);
+                        if (diff > pn_max) pn_max = diff;
+                        if (diff != 0.0) ++pn_diff;
+                    }
+                }
+                for (int64_t h = 0; h < d.Hv; ++h) {
+                    for (int64_t i = 0; i < d.S; ++i) {
+                        const float ref = v_b[tok*d.Hv*d.S + h*d.S + i];
+                        const float got = row[d.Hk*d.S + h*d.S + i];
+                        const double diff = std::abs((double) ref - (double) got);
+                        if (diff > pn_max) pn_max = diff;
+                        if (diff != 0.0) ++pn_diff;
+                    }
+                    {
+                        const float ref = g_b[tok*d.Hv + h];
+                        const float got = row[d.Hk*d.S + d.Hv*d.S + h];
+                        const double diff = std::abs((double) ref - (double) got);
+                        if (diff > pn_max) pn_max = diff;
+                        if (diff != 0.0) ++pn_diff;
+                    }
+                    {
+                        const float ref = beta_b[tok*d.Hv + h];
+                        const float got = row[d.Hk*d.S + d.Hv*d.S + d.Hv + h];
+                        const double diff = std::abs((double) ref - (double) got);
+                        if (diff > pn_max) pn_max = diff;
+                        if (diff != 0.0) ++pn_diff;
+                    }
+                }
+            }
+            printf("    pend_new: diffs=%lld max_abs=%.3e\n", (long long) pn_diff, pn_max);
+            all_ok = all_ok && (pn_diff == 0);
+        }
         all_ok = all_ok && attn_cmp.bitwise && state_cmp.bitwise;
 
         ggml_free(ctx);
@@ -258,17 +309,21 @@ int main(int argc, char ** argv) {
     setbuf(stdout, NULL); // unbuffered: report progress even if a later step crashes
 
     bool ok = true;
-    for (int64_t T : { 1, 2, 4, 9, 17 }) {
-        const std::set<int64_t> js = { 0, 1, 2, T - 1, T, 17 };
-        ok = run_case(T, js) && ok;
+    for (auto [T, C] : { std::pair<int64_t, int64_t>{1, 17}, {2, 17}, {4, 17}, {9, 17}, {17, 17},
+                         {18, 17}, {33, 17}, {17, 9}, {33, 9} }) {
+        std::set<int64_t> js = { 0, 1, 2, T - 1, T, C };
+        for (auto it = js.begin(); it != js.end(); ) {
+            it = *it > C ? js.erase(it) : std::next(it); // n_pend cannot exceed the capacity
+        }
+        ok = run_case(T, C, js) && ok;
     }
-    // full sweep of j for one T
+    // full sweep of j for one case
     {
         std::set<int64_t> js;
         for (int64_t j = 0; j <= 17; ++j) {
             js.insert(j);
         }
-        ok = run_case(4, js) && ok;
+        ok = run_case(4, 17, js) && ok;
     }
 
     printf("%s\n", ok ? "GDN_DEFERRED_SEMANTICS_OK" : "GDN_DEFERRED_SEMANTICS_FAILED");

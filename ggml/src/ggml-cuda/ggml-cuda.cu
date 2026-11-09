@@ -5861,13 +5861,12 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_GATED_DELTA_NET:
             return true;
         case GGML_OP_GATED_DELTA_NET_DEFERRED: {
-            // DenseX: deferred commit, scalar gate only, autoregressive path only (see the CUDA op)
+            // DenseX: deferred commit, scalar gate only; the AR token loop handles any batch length
             if (op->src[3]->ne[0] != 1) {
                 return false;
             }
             const int64_t S_v = op->src[2]->ne[0];
-            const int64_t T   = op->src[2]->ne[2];
-            return T <= 32 && (S_v == 16 || S_v == 32 || S_v == 64 || S_v == 128);
+            return S_v == 16 || S_v == 32 || S_v == 64 || S_v == 128;
         }
         case GGML_OP_DSV4_HC_COMB:
             return op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32 &&
