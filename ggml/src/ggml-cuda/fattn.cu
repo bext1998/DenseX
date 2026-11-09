@@ -287,11 +287,11 @@ static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols2(ggml_backend_cuda_con
 
 // DenseX: whether the MMA kernel reads K/V in place from a q8_0 / q4_0 cache instead of converting them to F16.
 // The single source of truth for both the FA allocation size (no F16 copy reserved) and the launch.
-// Covers dim 256 with GQA > 4 (Qwen3.x full attention) on Ampere+; GGML_CUDA_FA_NATIVE_KV=0 turns it off.
+// Covers dim 256 with GQA > 4 (Qwen3.x full attention) on Ampere+; off by default, GGML_CUDA_FA_NATIVE_KV=1 turns it on.
 static bool ggml_cuda_fattn_mma_native_kv(const int cc, const ggml_tensor * dst) {
     static const bool enabled = [] {
         const char * env = getenv("GGML_CUDA_FA_NATIVE_KV");
-        return env == nullptr || atoi(env) != 0;
+        return env != nullptr && atoi(env) != 0;
     }();
     if (!enabled || !GGML_CUDA_CC_IS_NVIDIA(cc) || !ampere_mma_available(cc)) {
         return false;
