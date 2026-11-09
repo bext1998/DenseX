@@ -4992,6 +4992,111 @@ struct test_gated_delta_net : public test_case {
     }
 };
 
+// GGML_OP_GATED_DELTA_NET_DEFERRED
+struct test_gated_delta_net_deferred : public test_case {
+    const int64_t head_count_k; // H_k (compact k/q heads)
+    const int64_t head_count;   // H_v
+    const int64_t head_size;    // S
+    const int64_t n_seqs;
+    const int64_t T;            // tokens of this batch (<= capacity, <= 32 for the CUDA AR path)
+    const int64_t C;            // pending row capacity
+    const int64_t j;            // pending rows replayed before the batch (written into n_pend)
+
+    std::string vars() override {
+        return VARS_TO_STR7(head_count_k, head_count, head_size, n_seqs, T, C, j);
+    }
+
+    test_gated_delta_net_deferred(int64_t head_count_k = 16, int64_t head_count = 48, int64_t head_size = 128,
+            int64_t n_seqs = 1, int64_t T = 4, int64_t C = 17, int64_t j = 0)
+        : head_count_k(head_count_k), head_count(head_count), head_size(head_size), n_seqs(n_seqs), T(T), C(C), j(j) {}
+
+    // the graph output is a concat of the validated regions; report the op under test
+    std::string op_desc(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return "GATED_DELTA_NET_DEFERRED";
+    }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        const int64_t R = head_size*head_count_k + head_size*head_count + head_count + head_count;
+
+        ggml_tensor * q = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_size, head_count_k, T, n_seqs);
+        ggml_tensor * k = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_size, head_count_k, T, n_seqs);
+        ggml_tensor * v = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_size, head_count, T, n_seqs);
+        ggml_tensor * g = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, 1, head_count, T, n_seqs);
+        ggml_tensor * beta = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, 1, head_count, T, n_seqs);
+        ggml_tensor * state = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_size, head_size, head_count, n_seqs);
+        ggml_tensor * pend = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, R, C, 1, n_seqs);
+        ggml_tensor * n_pend = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_seqs);
+        ggml_set_name(q, "q");
+        ggml_set_name(k, "k");
+        ggml_set_name(v, "v");
+        ggml_set_name(g, "g");
+        ggml_set_name(beta, "beta");
+        ggml_set_name(state, "state");
+        ggml_set_name(pend, "pend");
+        ggml_set_name(n_pend, "n_pend");
+        // q/k are L2-normalised in qwen35 before delta_net
+        q = ggml_l2_norm(ctx, q, 1e-6f);
+        k = ggml_l2_norm(ctx, k, 1e-6f);
+        ggml_tensor * out = ggml_gated_delta_net_deferred(ctx, q, k, v, g, beta, state, pend, n_pend, C);
+
+        // rows >= T of pend_new are undefined; only compare attn, state_j and the first T packed rows
+        const int64_t attn_elems   = head_size*head_count*T*n_seqs;
+        const int64_t state_elems  = head_size*head_size*head_count*n_seqs;
+        ggml_tensor * attn_v  = ggml_view_1d(ctx, out, attn_elems, 0);
+        ggml_tensor * state_v = ggml_view_1d(ctx, out, state_elems, attn_elems*sizeof(float));
+        ggml_tensor * pend_v  = ggml_reshape_1d(ctx, ggml_cont(ctx,
+                                    ggml_view_3d(ctx, out, R, T, 1, R*sizeof(float), C*R*sizeof(float),
+                                                 (attn_elems + state_elems)*sizeof(float))), R*T);
+        return ggml_concat(ctx, ggml_concat(ctx, attn_v, state_v, 0), pend_v, 0);
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+            if (ggml_is_view_op(t->op)) { continue; }
+            if (strcmp(t->name, "g") == 0) {
+                // scalar log gate: negative values (softplus output range)
+                init_tensor_uniform(t, -20.0f, -1e-4f);
+            } else if (strcmp(t->name, "beta") == 0) {
+                init_tensor_uniform(t, 0.0f, 1.0f);
+            } else if (strcmp(t->name, "v") == 0) {
+                init_tensor_uniform(t, -0.3f, 5.0f);
+            } else if (strcmp(t->name, "n_pend") == 0) {
+                const int32_t j_val = (int32_t) j;
+                ggml_backend_tensor_set(t, &j_val, 0, sizeof(int32_t));
+            } else if (strcmp(t->name, "pend") == 0) {
+                // fill the pending rows with the same value ranges as the plain inputs:
+                // row layout k | v | g | beta, tokens are columns
+                std::random_device rd;
+                std::mt19937 gen(rd());
+                std::uniform_real_distribution<float> dis_v(-0.3f, 5.0f);
+                std::uniform_real_distribution<float> dis_g(-20.0f, -1e-4f);
+                std::uniform_real_distribution<float> dis_b(0.0f, 1.0f);
+                const int64_t R = head_size*head_count_k + head_size*head_count + head_count + head_count;
+                std::vector<float> data(ggml_nelements(t));
+                for (int64_t b = 0; b < n_seqs; ++b) {
+                    for (int64_t c = 0; c < C; ++c) {
+                        float * row = data.data() + ((b*C + c)*R);
+                        for (int64_t r = 0; r < head_size*head_count_k; ++r) {
+                            row[r] = dis_v(gen); // pending k, head values
+                        }
+                        for (int64_t r = 0; r < head_size*head_count; ++r) {
+                            row[head_size*head_count_k + r] = dis_v(gen); // pending v
+                        }
+                        for (int64_t h = 0; h < head_count; ++h) {
+                            row[head_size*(head_count_k + head_count) + h] = dis_g(gen); // pending log gate
+                            row[head_size*(head_count_k + head_count) + head_count + h] = dis_b(gen); // pending beta
+                        }
+                    }
+                }
+                ggml_backend_tensor_set(t, data.data(), 0, data.size()*sizeof(float));
+            } else {
+                init_tensor_uniform(t);
+            }
+        }
+    }
+};
+
 // GGML_OP_GATED_DELTA_NET + GGML_OP_CPY (recurrent cache fusion)
 struct test_gated_delta_net_cache_fusion : public test_case {
     const ggml_type type;
@@ -12041,6 +12146,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (int kv : { 1, 7, 8, 63, 64, 65 }) {
         for (ggml_type type_K : {GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_BF16, GGML_TYPE_Q8_0, GGML_TYPE_Q5_1, GGML_TYPE_Q5_0, GGML_TYPE_Q4_1, GGML_TYPE_Q4_0}) {
             test_cases.emplace_back(new test_lightning_indexer(128, 64, kv, 32, 4, 1, type_K));
+        }
+    }
+
+    // GATED_DELTA_NET_DEFERRED: model shape, T <= 32 (AR path), C = 17, j in {0,1,2,T-1,T,C} (dedup)
+    for (int64_t T : { 1, 2, 4, 9, 17 }) {
+        const std::set<int64_t> js = { 0, 1, 2, T - 1, T, 17 }; // dedup
+        for (int64_t j : js) {
+            test_cases.emplace_back(new test_gated_delta_net_deferred(16, 48, 128, 1, T, 17, j));
         }
     }
 

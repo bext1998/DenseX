@@ -1091,6 +1091,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "RWKV_WKV7",
     "SOLVE_TRI",
     "GATED_DELTA_NET",
+    "GATED_DELTA_NET_DEFERRED",
     "LIGHTNING_INDEXER",
     "DSV4_HC_COMB",
     "DSV4_HC_PRE",
@@ -1112,7 +1113,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1227,7 +1228,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -6436,6 +6437,92 @@ struct ggml_tensor * ggml_gated_delta_net(
     result->src[3] = g;
     result->src[4] = beta;
     result->src[5] = state;
+
+    return result;
+}
+
+// ggml_gated_delta_net_deferred
+
+struct ggml_tensor * ggml_gated_delta_net_deferred(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * q,
+        struct ggml_tensor  * k,
+        struct ggml_tensor  * v,
+        struct ggml_tensor  * g,
+        struct ggml_tensor  * beta,
+        struct ggml_tensor  * state,
+        struct ggml_tensor  * pend,
+        struct ggml_tensor  * n_pend,
+        int64_t               capacity) {
+    GGML_ASSERT(ggml_is_contiguous_rows(q));
+    GGML_ASSERT(ggml_is_contiguous_rows(k));
+    GGML_ASSERT(ggml_is_contiguous_rows(v));
+    GGML_ASSERT(ggml_is_contiguous(g));
+    GGML_ASSERT(ggml_is_contiguous(beta));
+    GGML_ASSERT(ggml_is_contiguous(state));
+    GGML_ASSERT(ggml_is_contiguous(pend));
+
+    GGML_ASSERT(q->type == GGML_TYPE_F32);
+    GGML_ASSERT(k->type == GGML_TYPE_F32);
+    GGML_ASSERT(v->type == GGML_TYPE_F32);
+    GGML_ASSERT(g->type == GGML_TYPE_F32);
+    GGML_ASSERT(beta->type == GGML_TYPE_F32);
+    GGML_ASSERT(state->type == GGML_TYPE_F32);
+    GGML_ASSERT(pend->type == GGML_TYPE_F32);
+    GGML_ASSERT(n_pend->type == GGML_TYPE_I32);
+
+    const int64_t S_v      = v->ne[0];
+    const int64_t H_v      = v->ne[1];
+    const int64_t n_tokens = v->ne[2];
+    const int64_t n_seqs   = v->ne[3];
+
+    // scalar gate only: KDA is not supported by the deferred op
+    GGML_ASSERT(g->ne[0] == 1);
+    GGML_ASSERT(beta->ne[0] == 1);
+
+    GGML_ASSERT(q->ne[0] == S_v && k->ne[0] == S_v);
+    GGML_ASSERT(q->ne[1] == k->ne[1]);
+    const int64_t H_k = q->ne[1];
+    GGML_ASSERT(H_v % H_k == 0);
+
+    GGML_ASSERT(q->ne[2] == n_tokens && k->ne[2] == n_tokens);
+    GGML_ASSERT(g->ne[1] == H_v && beta->ne[1] == H_v);
+    GGML_ASSERT(g->ne[2] == n_tokens && beta->ne[2] == n_tokens);
+    GGML_ASSERT(q->ne[3] == n_seqs && k->ne[3] == n_seqs && g->ne[3] == n_seqs && beta->ne[3] == n_seqs);
+
+    GGML_ASSERT(state->ne[0] == S_v);
+    GGML_ASSERT(state->ne[1] == S_v);
+    GGML_ASSERT(state->ne[2] == H_v);
+    GGML_ASSERT(state->ne[3] == n_seqs);
+
+    // pend row: compact k | v | g | beta
+    const int64_t R = S_v*H_k + S_v*H_v + H_v + H_v;
+    GGML_ASSERT(pend->ne[0] == R);
+    GGML_ASSERT(pend->ne[2] == n_seqs);
+    GGML_ASSERT(n_pend->ne[0] == n_seqs);
+
+    GGML_ASSERT(capacity >= 1);
+    GGML_ASSERT(n_tokens <= capacity); // pending rows of this batch must fit the fixed capacity
+    GGML_ASSERT(pend->ne[1] == capacity);
+
+    // output layout: attention scores | state after the pending rows | packed pending rows of this batch
+    const int64_t attn_elems   = S_v * H_v * n_tokens * n_seqs;
+    const int64_t state_elems  = S_v * S_v * H_v * n_seqs;
+    const int64_t pend_elems   = R * capacity * n_seqs;
+    const int64_t ne[4]        = { attn_elems + state_elems + pend_elems, 1, 1, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    ggml_set_op_params_i32(result, 0, (int32_t) capacity);
+
+    result->op     = GGML_OP_GATED_DELTA_NET_DEFERRED;
+    result->src[0] = q;
+    result->src[1] = k;
+    result->src[2] = v;
+    result->src[3] = g;
+    result->src[4] = beta;
+    result->src[5] = state;
+    result->src[6] = pend;
+    result->src[7] = n_pend;
 
     return result;
 }

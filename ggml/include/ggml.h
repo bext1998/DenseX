@@ -581,6 +581,7 @@ extern "C" {
         GGML_OP_RWKV_WKV7,
         GGML_OP_SOLVE_TRI,
         GGML_OP_GATED_DELTA_NET,
+        GGML_OP_GATED_DELTA_NET_DEFERRED,
         GGML_OP_LIGHTNING_INDEXER,
         GGML_OP_DSV4_HC_COMB,
         GGML_OP_DSV4_HC_PRE,
@@ -2664,6 +2665,38 @@ extern "C" {
             struct ggml_tensor  * beta,
             struct ggml_tensor  * state,
             int64_t               K);
+
+    // DenseX: gated delta net with deferred commit of the previous batch's inputs.
+    // Same recurrence as ggml_gated_delta_net (scalar gate only, no KDA). The pending rows are replayed into the
+    // state before the new batch is processed; the batch's final state is discarded (commit happens in the next
+    // call, when the caller passes the accepted prefix back as pending rows).
+    //
+    // tensor shapes (S_k == S_v == S, H_v % H_k == 0, scalar gate only):
+    //   q, k    : [S, H_k, T, n_seqs]      new tokens of this batch
+    //   v       : [S, H_v, T, n_seqs]
+    //   g, beta : [1, H_v, T, n_seqs]      scalar log gate / acceptance (KDA not supported)
+    //   state   : [S, S, H_v, n_seqs]      base state s0
+    //   pend    : [R, C, n_seqs] F32       pending inputs of the previous batch, one row per token,
+    //                                      R = S*H_k + S*H_v + H_v + H_v, row layout: k | v | g | beta
+    //                                      (k compact over H_k, head h_v uses k head h_v % H_k),
+    //                                      C = capacity fixed at build time
+    //   n_pend  : [n_seqs] I32             number of pending rows to replay first (0..C), tensor contents
+    //                                      (not op params), so it can change between replays of the same graph
+    // output (single 1-D F32 tensor, in this order; take views at these offsets):
+    //   attn    : [S, H_v, T, n_seqs]      output computed from the state after the pending rows
+    //   state_j : [S, S, H_v, n_seqs]      state after applying the first j = n_pend pending rows
+    //   pend_new: [R, C, n_seqs]           this batch's inputs packed into rows 0..T-1; rows >= T are undefined
+    GGML_API struct ggml_tensor * ggml_gated_delta_net_deferred(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * k,
+            struct ggml_tensor  * v,
+            struct ggml_tensor  * g,
+            struct ggml_tensor  * beta,
+            struct ggml_tensor  * state,
+            struct ggml_tensor  * pend,
+            struct ggml_tensor  * n_pend,
+            int64_t               capacity);
 
     // DSA lightning indexer
     //

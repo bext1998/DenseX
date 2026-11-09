@@ -11410,6 +11410,222 @@ void ggml_compute_forward_gated_delta_net(
     }
 }
 
+// ggml_compute_forward_gated_delta_net_deferred
+//
+// Output layout: attention scores | state after the pending rows | packed pending rows of this batch.
+// The pending rows are replayed into the working state (same per-token update as ggml_gated_delta_net,
+// without the attention contraction), the replayed state is written to state_j, then the new batch is
+// processed on top of it and its final state is discarded. Each thread owns whole (head, sequence)
+// matrices, so no synchronization is needed.
+static void ggml_compute_forward_gated_delta_net_deferred_one_chunk(
+    const ggml_compute_params * params,
+    ggml_tensor * dst,
+    int64_t ir0,
+    int64_t ir1) {
+
+    ggml_tensor * src_q     = dst->src[0];
+    ggml_tensor * src_k     = dst->src[1];
+    ggml_tensor * src_v     = dst->src[2];
+    ggml_tensor * src_g     = dst->src[3];
+    ggml_tensor * src_beta  = dst->src[4];
+    ggml_tensor * src_state = dst->src[5];
+    ggml_tensor * src_pend  = dst->src[6];
+    ggml_tensor * src_np    = dst->src[7];
+
+    const int64_t S_v      = src_v->ne[0];
+    const int64_t H        = src_v->ne[1];
+    const int64_t n_tokens = src_v->ne[2];
+    const int64_t n_seqs   = src_v->ne[3];
+    const int64_t H_k      = src_q->ne[1];
+    const int64_t C        = ggml_get_op_params_i32(dst, 0); // pending row capacity
+    const int64_t R        = src_pend->ne[0];              // S_v*H_k + S_v*H + H + H
+
+    GGML_ASSERT(src_g->ne[0] == 1); // scalar gate only
+
+    GGML_TENSOR_LOCALS(int64_t, neq, src_q, ne);
+    GGML_TENSOR_LOCALS(size_t,  nbq, src_q, nb);
+    GGML_TENSOR_LOCALS(int64_t, nek, src_k, ne);
+    GGML_TENSOR_LOCALS(size_t,  nbk, src_k, nb);
+    GGML_TENSOR_LOCALS(int64_t, nev, src_v, ne);
+    GGML_TENSOR_LOCALS(size_t,  nbv, src_v, nb);
+    GGML_TENSOR_LOCALS(size_t,  nbg, src_g, nb);
+    GGML_TENSOR_LOCALS(size_t,  nbb, src_beta, nb);
+
+    const int64_t state_seq_stride = src_state->nb[3] / sizeof(float);
+
+    // per-thread scratch: delta vector + working state (the state_j output region must not be used as
+    // the working buffer: it has to keep the post-replay state while the batch advances it)
+    float * delta      = (float *) params->wdata + params->ith * (S_v + S_v * S_v) + CACHE_LINE_SIZE_F32;
+    float * state_work = delta + S_v;
+
+    // output layout: attn | state_j | pend_new
+    const int64_t attn_elems  = S_v * H * n_tokens * n_seqs;
+    const int64_t state_elems = S_v * S_v * H * n_seqs;
+    float * attn_out_base  = (float *) dst->data;
+    float * state_j_base   = (float *) dst->data + attn_elems;
+    float * pend_new_base  = (float *) dst->data + attn_elems + state_elems;
+    const float * state_in_base = (const float *) src_state->data;
+    const float * pend_base     = (const float *) src_pend->data;
+    const int32_t * n_pend_base = (const int32_t *) src_np->data;
+
+  //const int64_t rq3 = nev3 / neq3;
+    const int64_t rk3 = nev3 / nek3;
+    const int64_t rq3 = nev3 / neq3;
+
+    const float scale = 1.0f / sqrtf((float) S_v);
+
+    for (int64_t ir = ir0; ir < ir1; ++ir) {
+        const int64_t iv1 = ir % H; // head_index
+        const int64_t iv3 = ir / H; // sequence
+
+        const int64_t iq1 = iv1 % neq1;
+        const int64_t ik1 = iv1 % nek1;
+
+        const int64_t iq3 = iv3 / rq3;
+        const int64_t ik3 = iv3 / rk3;
+
+        // working state buffer: s_out[j*S_v + i] = S[i][j], row j of s_out = column j of S (contiguous access)
+        float * s_out = state_work;
+
+        const float * s_in = state_in_base + iv3 * state_seq_stride + iv1 * S_v * S_v;
+        // state_j output keeps the state after the pending rows; the batch runs on the scratch copy
+        float * state_j_out = state_j_base + (iv3 * H + iv1) * S_v * S_v;
+        memcpy(state_j_out, s_in, S_v * S_v * sizeof(float));
+        memcpy(s_out, s_in, S_v * S_v * sizeof(float));
+
+        // replay the first j pending rows into the state (no attention contraction, no q)
+        const int64_t j_pend = n_pend_base[iv3];
+        GGML_ASSERT(j_pend >= 0 && j_pend <= C);
+        for (int64_t t = 0; t < j_pend; t++) {
+            const float * p_row = pend_base + (iv3 * C + t) * R;
+            const float * k_d   = p_row + (iv1 % H_k) * S_v;
+            const float * v_d   = p_row + S_v * H_k + iv1 * S_v;
+            const float   beta_val = p_row[S_v * (H_k + H) + H + iv1];
+            const float   g_val    = expf(p_row[S_v * (H_k + H) + iv1]);
+
+            ggml_vec_scale_f32(S_v * S_v, s_out, g_val);
+
+            for (int64_t j = 0; j < S_v; ++j) {
+                float sum = 0.0f;
+                ggml_vec_dot_f32(S_v, &sum, 0, &s_out[j * S_v], 0, k_d, 0, 1);
+                delta[j] = (v_d[j] - sum) * beta_val;
+            }
+
+            for (int64_t j = 0; j < S_v; ++j) {
+                ggml_vec_mad_f32(S_v, &s_out[j * S_v], k_d, delta[j]);
+            }
+        }
+        // state_j = state after the pending rows (replayed on the scratch buffer)
+        memcpy(state_j_out, s_out, S_v * S_v * sizeof(float));
+
+        // attn output pointer for first token of this (head, seq)
+        float * attn_data = attn_out_base + (iv3 * n_tokens * H + iv1) * S_v;
+
+        for (int64_t t = 0; t < n_tokens; t++) {
+            const float * q_d = (const float *)((const char *)src_q->data + iq3 * nbq3 + t * nbq2 + iq1 * nbq1);
+            const float * k_d = (const float *)((const char *)src_k->data + ik3 * nbk3 + t * nbk2 + ik1 * nbk1);
+            const float * v_d = (const float *)((const char *)src_v->data + iv3 * nbv3 + t * nbv2 + iv1 * nbv1);
+
+            const float beta_val = *(const float *)((const char *)src_beta->data + iv3 * nbb3 + t * nbb2 + iv1 * nbb1);
+            const float * g_d    =  (const float *)((const char *)src_g->data    + iv3 * nbg3 + t * nbg2 + iv1 * nbg1);
+
+            // pack this batch's inputs into the pending rows: k is written by the first H_k heads only
+            // (compact layout), each head writes its own v/g/beta
+            float * p_row = pend_new_base + (iv3 * C + t) * R;
+            if (iv1 < H_k) {
+                for (int64_t i = 0; i < S_v; ++i) {
+                    p_row[iv1 * S_v + i] = k_d[i];
+                }
+            }
+            for (int64_t i = 0; i < S_v; ++i) {
+                p_row[S_v * H_k + iv1 * S_v + i] = v_d[i];
+            }
+            p_row[S_v * (H_k + H) + iv1]         = g_d[0];
+            p_row[S_v * (H_k + H) + H + iv1]     = beta_val;
+
+            ggml_vec_scale_f32(S_v * S_v, s_out, expf(g_d[0]));
+
+            for (int64_t j = 0; j < S_v; ++j) {
+                float sum = 0.0f;
+                ggml_vec_dot_f32(S_v, &sum, 0, &s_out[j * S_v], 0, k_d, 0, 1);
+                delta[j] = (v_d[j] - sum) * beta_val;
+            }
+
+            for (int64_t j = 0; j < S_v; ++j) {
+                ggml_vec_mad_f32(S_v, &s_out[j * S_v], k_d, delta[j]);
+            }
+
+            for (int64_t j = 0; j < S_v; ++j) {
+                float sum = 0.0f;
+                ggml_vec_dot_f32(S_v, &sum, 0, &s_out[j * S_v], 0, q_d, 0, 1);
+                attn_data[j] = sum * scale;
+            }
+
+            attn_data += S_v * H;
+
+            // the batch's final state is discarded: it is re-derived from state_j + pending in the next call
+        }
+    }
+}
+
+static void ggml_compute_forward_gated_delta_net_deferred_f32(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+
+    ggml_tensor * V = dst->src[2];
+    int64_t nr = V->ne[1] * V->ne[3];
+
+    // disable for NUMA
+    const bool disable_chunking = ggml_is_numa();
+
+    int nth = params->nth;
+    int ith = params->ith;
+
+    // 4x chunks per thread
+    int nth_scaled = nth * 4;
+    int64_t chunk_size = (nr + nth_scaled - 1) / nth_scaled;
+    int64_t nchunk     = (nr + chunk_size - 1) / chunk_size;
+
+    if (nth == 1 || nchunk < nth || disable_chunking) {
+      nchunk = nth;
+    }
+
+    if (ith == 0) {
+      ggml_threadpool_chunk_set(params->threadpool, nth);
+    }
+
+    ggml_barrier(params->threadpool);
+
+    const int64_t dr = (nr + nchunk - 1) / nchunk;
+
+    int current_chunk = ith;
+
+    while (current_chunk < nchunk) {
+        const int64_t ir0 = dr * current_chunk;
+        const int64_t ir1 = MIN(ir0 + dr, nr);
+
+        ggml_compute_forward_gated_delta_net_deferred_one_chunk(params, dst, ir0, ir1);
+        current_chunk = ggml_threadpool_chunk_add(params->threadpool, 1);
+    }
+}
+
+void ggml_compute_forward_gated_delta_net_deferred(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    const ggml_tensor * src0 = dst->src[0];
+
+    switch (src0->type) {
+        case GGML_TYPE_F32:
+            {
+                ggml_compute_forward_gated_delta_net_deferred_f32(params, dst);
+            } break;
+        default:
+            {
+                GGML_ABORT("fatal error");
+            }
+    }
+}
+
 
 // ggml_compute_forward_dsv4_hc_comb
 
