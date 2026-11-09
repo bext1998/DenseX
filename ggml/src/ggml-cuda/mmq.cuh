@@ -1436,12 +1436,30 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
         return;
     }
 
+    // DenseX: count the block slots of the whole GPU (SMs x resident blocks per SM) instead of the SMs. With 2 resident
+    // blocks per SM (e.g. IQ3 at J=16 on sm_86) tiling 136 tiles over 56 slots leaves a 2.43-wave tail, and stream-k
+    // over nsm blocks runs one block per SM. Set DENSEX_MMQ_SLOTS=0 for the previous per-SM rule.
+    static const bool use_slots = [] {
+        const char * env = getenv("DENSEX_MMQ_SLOTS");
+        return env == nullptr || atoi(env) != 0;
+    }();
+    static int blocks_per_sm = -1; // per template instantiation; the kernel's resources do not change at runtime
+    if (blocks_per_sm < 0) {
+        int n = 1;
+        if (use_slots) {
+            CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&n, mul_mat_q<type, J, fallback, prec_src1>,
+                config.nthreads, nbytes_shared));
+        }
+        blocks_per_sm = std::max(n, 1);
+    }
+    const int nslots = nsm*blocks_per_sm;
+
     // For the stream-k kernel it is possible to run it with tiling by setting the number of CUDA blocks equal to the number of tiles.
     // This is worthwhile if the efficiency of tiling is high and skipping the fixup kernel is more important.
     const int ntiles_dst = ntx * nty * ntzw;
-    const int tiles_nwaves = (ntiles_dst + nsm - 1) / nsm;
-    const int tiles_efficiency_percent = 100 * ntiles_dst / (nsm*tiles_nwaves);
-    const dim3 block_nums_stream_k(GGML_CUDA_CC_IS_NVIDIA(cc) && tiles_efficiency_percent >= 90 ? ntiles_dst : nsm, 1, 1);
+    const int tiles_nwaves = (ntiles_dst + nslots - 1) / nslots;
+    const int tiles_efficiency_percent = 100 * ntiles_dst / (nslots*tiles_nwaves);
+    const dim3 block_nums_stream_k(GGML_CUDA_CC_IS_NVIDIA(cc) && tiles_efficiency_percent >= 90 ? ntiles_dst : nslots, 1, 1);
 
     GGML_ASSERT(ntiles_dst * blocks_per_ne00_fd.z < (1 << 30)); // Assert that variable kbc will not overflow.
 

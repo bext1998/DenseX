@@ -1312,6 +1312,14 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
     constexpr int nrows = warp_size / threads_per_row;
     const int kqsx = threadIdx.x % threads_per_row;
 
+    // DenseX: look the 1 KiB grid up in shared memory instead of through L1 (same values, same order).
+    // Every thread of the block calls load_tiles, so the block-wide copy + barrier is uniform.
+    __shared__ uint32_t grid_sh[256];
+    for (int t = threadIdx.y*warp_size + threadIdx.x; t < 256; t += nwarps*warp_size) {
+        grid_sh[t] = iq3xxs_grid[t];
+    }
+    __syncthreads();
+
 #pragma unroll
     for (int i0 = 0; i0 < I; i0 += nwarps * nrows) {
         int i = i0 + threadIdx.y*nrows + threadIdx.x/threads_per_row;
@@ -1328,7 +1336,7 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 
 #pragma unroll
         for (int l = 0; l < QR3_XXS; ++l) {
-            const int2 grid_pos = make_int2(iq3xxs_grid[q3[2*l+0]], iq3xxs_grid[q3[2*l+1]]);
+            const int2 grid_pos = make_int2(grid_sh[q3[2*l+0]], grid_sh[q3[2*l+1]]);
             const uint32_t signs = unpack_ksigns(aux32 >> (7*l));
 
             const int signs0 = __vcmpne4(signs & 0x08040201, 0);
@@ -1376,6 +1384,13 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
     constexpr int nrows = warp_size / threads_per_row;
     const int kqsx = threadIdx.x % threads_per_row;
 
+    // DenseX: the 2 KiB grid in shared memory (see load_tiles_iq3_xxs)
+    __shared__ uint32_t grid_sh[512];
+    for (int t = threadIdx.y*warp_size + threadIdx.x; t < 512; t += nwarps*warp_size) {
+        grid_sh[t] = iq3s_grid[t];
+    }
+    __syncthreads();
+
 #pragma unroll
     for (int i0 = 0; i0 < I; i0 += nwarps * nrows) {
         int i = i0 + threadIdx.y*nrows + threadIdx.x/threads_per_row;
@@ -1397,8 +1412,8 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 #pragma unroll
         for (int l = 0; l < QR3_S; ++l) {
             const int2 grid_pos = make_int2(
-                iq3s_grid[qs[2*l+0] | ((qh << (8 - 2*l)) & 0x100)],
-                iq3s_grid[qs[2*l+1] | ((qh << (7 - 2*l)) & 0x100)]);
+                grid_sh[qs[2*l+0] | ((qh << (8 - 2*l)) & 0x100)],
+                grid_sh[qs[2*l+1] | ((qh << (7 - 2*l)) & 0x100)]);
 
             const int signs0 = __vcmpne4(((signs_packed_8[l] & 0x03) << 7) | ((signs_packed_8[l] & 0x0C) << 21), 0x00000000);
             const int signs1 = __vcmpne4(((signs_packed_8[l] & 0x30) << 3) | ((signs_packed_8[l] & 0xC0) << 17), 0x00000000);
