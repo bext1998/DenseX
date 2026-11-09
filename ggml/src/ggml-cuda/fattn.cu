@@ -285,6 +285,81 @@ static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols2(ggml_backend_cuda_con
     }
 }
 
+// DenseX: whether the MMA kernel reads K/V in place from a q8_0 / q4_0 cache instead of converting them to F16.
+// The single source of truth for both the FA allocation size (no F16 copy reserved) and the launch.
+// Covers dim 256 with GQA > 4 (Qwen3.x full attention) on Ampere+; GGML_CUDA_FA_NATIVE_KV=0 turns it off.
+static bool ggml_cuda_fattn_mma_native_kv(const int cc, const ggml_tensor * dst) {
+    static const bool enabled = [] {
+        const char * env = getenv("GGML_CUDA_FA_NATIVE_KV");
+        return env == nullptr || atoi(env) != 0;
+    }();
+    if (!enabled || !GGML_CUDA_CC_IS_NVIDIA(cc) || !ampere_mma_available(cc)) {
+        return false;
+    }
+
+    const ggml_tensor * Q    = dst->src[0];
+    const ggml_tensor * K    = dst->src[1];
+    const ggml_tensor * V    = dst->src[2];
+    const ggml_tensor * mask = dst->src[3];
+
+    const bool types_ok =
+        (K->type == GGML_TYPE_Q8_0 && (V->type == GGML_TYPE_Q8_0 || V->type == GGML_TYPE_Q4_0)) ||
+        (K->type == GGML_TYPE_Q4_0 &&  V->type == GGML_TYPE_Q4_0);
+    if (!types_ok || Q->ne[0] != 256 || K->ne[0] != 256 || V->ne[0] != 256) {
+        return false;
+    }
+
+    float max_bias      = 0.0f;
+    float logit_softcap = 0.0f;
+    memcpy(&max_bias,      (const float *) dst->op_params + 1, sizeof(float));
+    memcpy(&logit_softcap, (const float *) dst->op_params + 2, sizeof(float));
+    const int32_t n_kv_max = ggml_get_op_params_i32(dst, 4);
+
+    // the conditions under which ggml_cuda_flash_attn_ext_mma_f16_switch_ncols2 picks ncols2 == 8 without sparse gather
+    if (!mask || max_bias != 0.0f || logit_softcap != 0.0f || n_kv_max != 0 || K->ne[1] % FATTN_KQ_STRIDE != 0) {
+        return false;
+    }
+    for (const ggml_tensor * t : {Q, mask}) {
+        for (size_t i = 1; i < GGML_MAX_DIMS; ++i) {
+            if (t->nb[i] % 16 != 0) {
+                return false;
+            }
+        }
+    }
+    if (Q->ne[2] % K->ne[2] != 0 || Q->ne[2] / K->ne[2] <= 4) {
+        return false;
+    }
+
+    // raw K/V rows are copied with 16-byte cp.async transactions: 16-byte aligned view bases and row strides
+    for (const ggml_tensor * t : {K, V}) {
+        if (t->nb[0] != ggml_type_size(t->type) || t->view_offs % 16 != 0) {
+            return false;
+        }
+        for (size_t i = 1; i < GGML_MAX_DIMS; ++i) {
+            if (t->nb[i] % 16 != 0) {
+                return false;
+            }
+        }
+    }
+    const bool V_is_K_view = V->view_src && (V->view_src == K || (V->view_src == K->view_src && V->view_offs == K->view_offs));
+    return !V_is_K_view;
+}
+
+template <ggml_type type_K, ggml_type type_V>
+static void ggml_cuda_flash_attn_ext_mma_native_kv(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    // same ncols1 choice as ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1<256, 256, 8> on Ampere+ without sparse gather
+    const int64_t n = dst->src[0]->ne[1];
+    if (n <= 1) {
+        ggml_cuda_flash_attn_ext_mma_f16_case<256, 256, 1, 8, type_K, type_V>(ctx, dst);
+    } else if (n <= 2) {
+        ggml_cuda_flash_attn_ext_mma_f16_case<256, 256, 2, 8, type_K, type_V>(ctx, dst);
+    } else if (n <= 4) {
+        ggml_cuda_flash_attn_ext_mma_f16_case<256, 256, 4, 8, type_K, type_V>(ctx, dst);
+    } else {
+        ggml_cuda_flash_attn_ext_mma_f16_case<256, 256, 8, 8, type_K, type_V>(ctx, dst);
+    }
+}
+
 static void ggml_cuda_flash_attn_ext_mma_f16(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
     const ggml_tensor * KQV  = dst;
@@ -292,6 +367,17 @@ static void ggml_cuda_flash_attn_ext_mma_f16(ggml_backend_cuda_context & ctx, gg
     const ggml_tensor * K    = dst->src[1];
     const ggml_tensor * V    = dst->src[2];
     const ggml_tensor * mask = dst->src[3];
+
+    if (ggml_cuda_fattn_mma_native_kv(cc, dst)) {
+        if (K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_Q8_0) {
+            ggml_cuda_flash_attn_ext_mma_native_kv<GGML_TYPE_Q8_0, GGML_TYPE_Q8_0>(ctx, dst);
+        } else if (K->type == GGML_TYPE_Q8_0) {
+            ggml_cuda_flash_attn_ext_mma_native_kv<GGML_TYPE_Q8_0, GGML_TYPE_Q4_0>(ctx, dst);
+        } else {
+            ggml_cuda_flash_attn_ext_mma_native_kv<GGML_TYPE_Q4_0, GGML_TYPE_Q4_0>(ctx, dst);
+        }
+        return;
+    }
 
     switch (Q->ne[0]) {
         case 64:
@@ -735,10 +821,15 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
 
     switch (kernel) {
         case BEST_FATTN_KERNEL_TILE:
-        case BEST_FATTN_KERNEL_MMA_F16:
             need_f16_K = true;
             need_f16_V = true;
             break;
+        case BEST_FATTN_KERNEL_MMA_F16: {
+            // DenseX: K/V read in place need no F16 copy
+            const bool native = ggml_cuda_fattn_mma_native_kv(ggml_cuda_info().devices[device].cc, dst);
+            need_f16_K = !native;
+            need_f16_V = !native;
+        } break;
         case BEST_FATTN_KERNEL_VEC: {
             const bool f16_fallback = ggml_cuda_get_fattn_vec_case(Q->ne[0], K->type, V->type) == nullptr;
             need_f16_K = K->type == GGML_TYPE_F32 || f16_fallback;
