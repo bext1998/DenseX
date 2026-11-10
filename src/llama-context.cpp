@@ -189,6 +189,13 @@ llama_context::llama_context(
     }
 
     cparams.n_rs_seq = params.n_rs_seq;
+    cparams.kv_window = params.kv_window;
+    cparams.kv_rollback = params.kv_rollback;
+    if (cparams.kv_window > 0 &&
+        (model.arch != LLM_ARCH_QWEN35 || params.ctx_type != LLAMA_CONTEXT_TYPE_MTP ||
+         cparams.n_seq_max != 1 || hparams.n_layer_nextn != 1 || hparams.is_swa_any())) {
+        throw std::runtime_error("kv_window requires a single-sequence Qwen35 MTP context with one prediction head and no model SWA");
+    }
     if (cparams.n_rs_seq > 0 && !llm_arch_supports_rs_rollback(model.arch)) {
         LLAMA_LOG_DEBUG("%s: n_rs_seq=%u requested but model does not support recurrent partial rollback; clamping to 0\n",
                         __func__, cparams.n_rs_seq);
@@ -3982,6 +3989,8 @@ llama_context_params llama_context_default_params() {
         /*.n_ubatch                    =*/ 512,
         /*.n_seq_max                   =*/ 1,
         /*.n_rs_seq                    =*/ 0,
+        /*.kv_window                   =*/ 0,
+        /*.kv_rollback                 =*/ 0,
         /*.n_outputs_max               =*/ 0,
         /*.n_outputs_max_per_seq       =*/ 1,
         /*.n_threads                   =*/ GGML_DEFAULT_N_THREADS, // TODO: better default

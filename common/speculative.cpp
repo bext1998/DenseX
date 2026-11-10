@@ -1454,6 +1454,8 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     // The last h-row of one process() call needs the first token of the NEXT
     // call to pair with, so it's stashed here until that next call fires.
     std::vector<std::vector<float>> pending_h;   // [n_seq][n_embd]
+    std::vector<llama_pos> pending_h_pos; // windowed MTP: position represented by pending_h, -1 if unavailable
+    std::vector<llama_pos> verify_pos0;
 
     std::vector<int32_t> i_batch_beg;
     std::vector<int32_t> i_batch_end;
@@ -1533,6 +1535,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         this->n_max = this->params.n_max;
 
         pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
+        if (this->params.kv_window > 0) {
+            pending_h_pos.assign(n_seq, -1);
+            verify_pos0.assign(n_seq, -1);
+        }
 
         i_last.assign(n_seq, -1);
         i_batch_beg.assign(n_seq, -1);
@@ -1568,7 +1574,8 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         auto * ctx_dft = this->params.ctx_dft;
         const llama_pos pos_max = llama_memory_seq_pos_max(llama_get_memory(ctx_dft), seq_id);
 
-        if (pos_max < N - 1 && !is_mem_shared) {
+        if (pos_max < N - 1 && !is_mem_shared &&
+                !(params.kv_window > 0 && pending_h_pos[seq_id] == N - 1)) {
             SPC_WRN("ctx_dft pos_max=%d < N-1=%d - "
                     "process() hook may not have run on every prefill ubatch "
                     "(need_embd / output flag on every prompt position?). "
@@ -1620,10 +1627,38 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             // TODO:this is generally true, but would be nice to assert it
             const float * h_tgt = llama_get_embeddings_nextn(ctx_tgt);
 
+            std::vector<bool> skip_first;
+            if (params.kv_window > 0) {
+                skip_first.assign(n_seq, false);
+                for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+                    if (i_batch_beg[seq_id] < 0) {
+                        continue;
+                    }
+                    const llama_pos pos = batch_in.tokens[i_batch_beg[seq_id]].pos[0];
+                    if (pos == 0 || pending_h_pos[seq_id] != pos - 1) {
+                        // A restored KV blob need not have its matching target hidden row.
+                        // Start a fresh draft suffix; rows after the first have target h in this batch.
+                        if (!llama_memory_seq_rm(llama_get_memory(ctx_dft), seq_id, -1, -1)) {
+                            return false;
+                        }
+                        pending_h_pos[seq_id] = -1;
+                        if (pos == 0) {
+                            std::fill(pending_h[seq_id].begin(), pending_h[seq_id].end(), 0.0f);
+                        } else {
+                            skip_first[seq_id] = true;
+                            SPC_WRN("windowed MTP rebuilding seq %d at pos %d without the first hidden pair\n", seq_id, pos);
+                        }
+                    }
+                }
+            }
+
             for (int k = 0; k < n_tokens; ++k) {
                 const auto & t = batch_in.tokens[k];
 
                 const llama_seq_id seq_id = t.seq_id;
+                if (params.kv_window > 0 && skip_first[seq_id] && k == i_batch_beg[seq_id]) {
+                    continue;
+                }
 
                 // vision tokens carry an embedding instead of an id
                 const int32_t idx = t.id != LLAMA_TOKEN_NULL
@@ -1640,7 +1675,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             auto * mem_dft = llama_get_memory(ctx_dft);
 
             bool ok = true;
-            for (int head = 0; head < n_mtp_layers; ++head) {
+            for (int head = 0; head < n_mtp_layers && batch.size() > 0; ++head) {
                 if (chain_heads) {
                     // ref: https://github.com/ggml-org/llama.cpp/pull/24340/changes#r3413498544
                     for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
@@ -1685,6 +1720,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
             std::memcpy(pending_h[seq_id].data(),
                     verify_h[seq_id].data() + (size_t) (n_rows - 1) * n_embd, row_bytes);
+            if (params.kv_window > 0) {
+                verify_pos0[seq_id] = batch_in.tokens[i_batch_beg[seq_id]].pos[0];
+                pending_h_pos[seq_id] = batch_in.tokens[i_batch_end[seq_id]].pos[0];
+            }
         }
 
         return true;
@@ -1703,6 +1742,16 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             auto & dp = dparams[seq_id];
 
             if (!dp.drafting) {
+                continue;
+            }
+
+            if (params.kv_window > 0 &&
+                    (pending_h_pos[seq_id] < 0 || pending_h_pos[seq_id] != dp.pos0 - 1)) {
+                dp.result->clear();
+                if (dp.result_q) {
+                    dp.result_q->clear();
+                }
+                SPC_WRN("windowed MTP skipping seq %d: no target hidden for pos %d\n", seq_id, dp.pos0 - 1);
                 continue;
             }
 
@@ -1869,6 +1918,44 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         const int32_t i_h = std::min<int32_t>(n_accepted, n_rows - 1);
         const size_t row_bytes = (size_t) n_embd * sizeof(float);
         std::memcpy(pending_h[seq_id].data(), verify_h[seq_id].data() + (size_t) i_h * n_embd, row_bytes);
+        if (params.kv_window > 0) {
+            pending_h_pos[seq_id] = verify_pos0[seq_id] + i_h;
+        }
+    }
+
+    bool get_state(llama_seq_id seq_id, std::vector<uint8_t> & data) const override {
+        if (params.kv_window == 0 || seq_id < 0 || seq_id >= (llama_seq_id) n_seq || pending_h_pos[seq_id] < 0) {
+            return false;
+        }
+        const uint32_t magic = 0x5750544d; // "MTPW"
+        const llama_pos pos = pending_h_pos[seq_id];
+        const size_t header = sizeof(magic) + sizeof(pos);
+        data.resize(header + (size_t) n_embd * sizeof(float));
+        std::memcpy(data.data(), &magic, sizeof(magic));
+        std::memcpy(data.data() + sizeof(magic), &pos, sizeof(pos));
+        std::memcpy(data.data() + header, pending_h[seq_id].data(), (size_t) n_embd * sizeof(float));
+        return true;
+    }
+
+    void set_state(llama_seq_id seq_id, const std::vector<uint8_t> & data) override {
+        if (params.kv_window == 0 || seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
+            return;
+        }
+        pending_h_pos[seq_id] = -1;
+        verify_h_rows[seq_id] = 0;
+        const size_t header = sizeof(uint32_t) + sizeof(llama_pos);
+        if (data.size() != header + (size_t) n_embd * sizeof(float)) {
+            return; // empty/older checkpoint: process() must rebuild rather than use stale hidden
+        }
+        uint32_t magic;
+        llama_pos pos;
+        std::memcpy(&magic, data.data(), sizeof(magic));
+        std::memcpy(&pos, data.data() + sizeof(magic), sizeof(pos));
+        if (magic != 0x5750544d || pos < 0) {
+            return;
+        }
+        pending_h_pos[seq_id] = pos;
+        std::memcpy(pending_h[seq_id].data(), data.data() + header, (size_t) n_embd * sizeof(float));
     }
 };
 
@@ -2647,6 +2734,7 @@ common_speculative_init_result::common_speculative_init_result(
       llama_model * model_tgt,
     llama_context * ctx_tgt) :
     pimpl(new impl{}) {
+    common_validate_speculative_kv_window(params);
     const bool has_draft = params.speculative.has_dft();
     const bool spec_mtp = std::find(params.speculative.types.begin(),
                                     params.speculative.types.end(),
@@ -2657,6 +2745,10 @@ common_speculative_init_result::common_speculative_init_result(
 
     if (spec_mtp) {
         cparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+        cparams.kv_window = params.speculative.draft.kv_window;
+        if (cparams.kv_window > 0) {
+            cparams.kv_rollback = static_cast<uint32_t>(params.speculative.draft.n_max);
+        }
     }
 
     // the draft context holds as many tokens per sequence as the target context

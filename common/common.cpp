@@ -28,6 +28,7 @@
 #include <iterator>
 #include <regex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -1236,8 +1237,29 @@ common_gguf_info common_get_gguf_info(const std::string & fname) {
     return info;
 }
 
+void common_validate_speculative_kv_window(const common_params & params) {
+    if (params.speculative.draft.kv_window == 0) {
+        return;
+    }
+    const auto & types = params.speculative.types;
+    // The parser retains the default NONE entry when --spec-type appends MTP.
+    if (std::count(types.begin(), types.end(), COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != 1 ||
+            std::any_of(types.begin(), types.end(), [](common_speculative_type type) {
+                return type != COMMON_SPECULATIVE_TYPE_NONE && type != COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
+            }) || params.speculative.has_dft()) {
+        throw std::invalid_argument("--spec-draft-kv-window requires only --spec-type mtp, without a separate draft model");
+    }
+    if (params.n_parallel != 1) {
+        throw std::invalid_argument("--spec-draft-kv-window requires a single sequence");
+    }
+    if (params.speculative.draft.n_max < 0) {
+        throw std::invalid_argument("--spec-draft-kv-window requires a nonnegative global draft limit");
+    }
+}
+
 common_init_result::common_init_result(common_params & params, bool model_only) :
     pimpl(new impl{}) {
+    common_validate_speculative_kv_window(params);
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
 
@@ -1256,6 +1278,10 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         auto cparams_dft = common_context_params_to_llama(params_dft);
         if (spec_mtp) {
             cparams_dft.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+            cparams_dft.kv_window = params.speculative.draft.kv_window;
+            if (cparams_dft.kv_window > 0) {
+                cparams_dft.kv_rollback = static_cast<uint32_t>(params.speculative.draft.n_max);
+            }
         }
         cparams_dft.n_rs_seq = 0;
 

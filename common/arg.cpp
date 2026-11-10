@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <fstream>
 #include <list>
+#include <limits>
 #include <numeric>
 #include <regex>
 #include <set>
@@ -1309,6 +1310,7 @@ bool common_params_parse(int argc, char ** argv, common_params & params, llama_e
             common_params_print_completion(ctx_arg);
             exit(0);
         }
+        common_validate_speculative_kv_window(params);
         params.lr.init();
     } catch (const std::invalid_argument & ex) {
         fprintf(stderr, "%s\n", ex.what());
@@ -4174,6 +4176,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.speculative.draft.n_min = value;
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_MIN"));
+    add_opt(common_arg(
+        {"--spec-draft-kv-window"}, "N",
+        string_format("MTP draft KV attention window, with absolute positions (default: %u - full context)", params.speculative.draft.kv_window),
+        [](common_params & params, const std::string & value) {
+            size_t parsed = 0;
+            const auto window = std::stoll(value, &parsed);
+            if (parsed != value.size() || window < 0 || window > std::numeric_limits<uint32_t>::max()) {
+                throw std::invalid_argument("--spec-draft-kv-window must be between 0 and UINT32_MAX");
+            }
+            params.speculative.draft.kv_window = static_cast<uint32_t>(window);
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_KV_WINDOW"));
     add_opt(common_arg(
         {"--spec-draft-n-ubatch"}, "N",
         string_format("physical maximum batch size of the draft context, use a smaller value to spare VRAM (default: %d - same as --n-ubatch)", params.speculative.draft.n_ubatch),

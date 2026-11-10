@@ -3276,6 +3276,28 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                     } else {
                         GGML_ASSERT(!hparams.is_swa_any());
 
+                        uint32_t kv_size = cparams.n_ctx_seq;
+                        uint32_t window = hparams.n_swa;
+                        uint32_t retention = 0;
+                        auto swa_type = hparams.swa_type;
+                        if (cparams.kv_window > 0) {
+                            const uint64_t keep = uint64_t(cparams.kv_window) + cparams.kv_rollback;
+                            if (keep > INT32_MAX) {
+                                throw std::runtime_error("draft KV window plus rollback exceeds the position range");
+                            }
+                            const uint64_t cells = std::min<uint64_t>(cparams.n_ctx_seq, keep + cparams.n_ubatch);
+                            const uint64_t padded = ((cells + 255) / 256) * 256;
+                            if (padded > UINT32_MAX) {
+                                throw std::runtime_error("draft KV cell count exceeds uint32_t");
+                            }
+                            kv_size = uint32_t(padded);
+                            window = cparams.kv_window;
+                            retention = uint32_t(keep);
+                            swa_type = LLAMA_SWA_TYPE_STANDARD;
+                            LLAMA_LOG_INFO("%s: draft KV window = %u, retention = %u, cells = %u (logical context = %u)\n",
+                                           __func__, window, retention, kv_size, cparams.n_ctx_seq);
+                        }
+
                         res = new llama_kv_cache(
                                 *this,
                                 hparams,
@@ -3284,15 +3306,17 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                 !cparams.flash_attn,
                                 cparams.offload_kqv,
                                 cparams.kv_unified,
-                                cparams.n_ctx_seq,
+                                kv_size,
                                 cparams.n_seq_max,
                                 1,
-                                hparams.n_swa,
-                                hparams.swa_type,
+                                window,
+                                swa_type,
                                 nullptr,
                                 filter,
                                 nullptr,
-                                nullptr);
+                                nullptr,
+                                "",
+                                retention);
                     }
                 }
             }

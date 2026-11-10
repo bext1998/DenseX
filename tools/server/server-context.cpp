@@ -256,6 +256,7 @@ struct server_slot {
 
     // speculative decoding
     common_speculative * spec;
+    bool mtp_kv_window = false;
 
     llama_tokens spec_draft;
 
@@ -332,6 +333,10 @@ struct server_slot {
     }
 
     bool prompt_load(server_prompt_cache & prompt_cache, const server_tokens & tokens) {
+        if (mtp_kv_window) {
+            // RAM cache entries contain KV, but no matching MTP target hidden row.
+            common_speculative_set_state(spec, id, {});
+        }
         bool res = prompt_cache.load(prompt, tokens, ctx_tgt, ctx_dft, id);
         if (!res) {
             SLT_WRN(*this, "%s", "failed to load prompt from cache\n");
@@ -344,6 +349,9 @@ struct server_slot {
         SLT_TRC(*this, "clearing prompt with %zu tokens\n", prompt.tokens.size());
 
         mem.seq_rm(id, -1, -1);
+        if (mtp_kv_window) {
+            common_speculative_set_state(spec, id, {});
+        }
 
         prompt.clear();
     }
@@ -1434,6 +1442,7 @@ private:
             slot.ctx_dft = ctx_dft;
             slot.mem.init(ctx_tgt, ctx_dft);
             slot.spec    = spec.get();
+            slot.mtp_kv_window = spec_mtp && params_base.speculative.draft.kv_window > 0;
             slot.n_ctx   = n_ctx_slot();
 
             slot.mctx                   = mctx;
@@ -2777,6 +2786,10 @@ private:
     // returns the number of bytes consumed, 0 if there is no usable draft state
     // the draft starts empty unless the file holds a draft state that fits the draft context
     size_t load_slot_draft(const std::string & filepath, size_t offset, server_slot & slot) const {
+        if (slot.mtp_kv_window) {
+            // Older slot files may have draft KV without a speculative-state trailer.
+            common_speculative_set_state(spec.get(), slot.id, {});
+        }
         if (ctx_dft != nullptr) {
             llama_memory_seq_rm(llama_get_memory(ctx_dft), slot.id, -1, -1);
         }
@@ -4571,6 +4584,10 @@ private:
 
                         if (slot.ctx_dft) {
                             GGML_ASSERT(ckpt.load_dft(slot.ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY));
+                        }
+                        if (slot.mtp_kv_window) {
+                            // spec_ckpt does not capture the MTP hidden carry.
+                            common_speculative_set_state(spec.get(), slot.id, {});
                         }
 
                         slot.mem.seq_rm(slot.id, ckpt.pos_max + 1, -1);

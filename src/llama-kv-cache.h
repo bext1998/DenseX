@@ -114,7 +114,8 @@ public:
         const  layer_reuse_cb & reuse,
         const  layer_share_cb & share,
         // a model can hold more than one cache, so the tensor names have to stay unique
-                 const char *   name_tag = "");
+                 const char *   name_tag = "",
+                    uint32_t   swa_retention = 0);
 
     ~llama_kv_cache() = default;
 
@@ -276,6 +277,7 @@ private:
 
     // SWA
     const uint32_t n_swa = 0;
+    const uint32_t n_swa_retention = 0;
 
     // env: LLAMA_ATTN_ROT_DISABLE
     uint32_t n_rot_k = 0;

@@ -345,6 +345,8 @@ struct common_params_speculative_draft {
 
     int32_t n_ubatch = 0; // physical batch size of the draft context (0 - use the target's n_ubatch)
 
+    uint32_t kv_window = 0; // MTP draft-only KV attention window (0 = full context)
+
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
 
@@ -1004,6 +1006,8 @@ private:
 using common_init_result_ptr = std::unique_ptr<common_init_result>;
 
 common_init_result_ptr common_init_from_params(common_params & params, bool model_only = false);
+
+void common_validate_speculative_kv_window(const common_params & params);
 
 struct llama_model_params   common_model_params_to_llama  (      common_params & params);
 struct llama_context_params common_context_params_to_llama(const common_params & params);
