@@ -12382,7 +12382,23 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
 
     // DenseX type-speed table (queue #27): every Qwen 3.8 27B projection shape {m (out), k (in)} for each candidate
     // GGUF type, at decode / MTP verify batch sizes. Run with -p "k=...,bs=..." style filters or the whole set.
+    // DenseX case sets replace the upstream perf list built above
+    if (getenv("DENSEX_MMVQ_SWEEP")) {
+        test_cases.clear();
+        for (ggml_type type_a : {GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_0, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K,
+                                 GGML_TYPE_Q8_0, GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS,
+                                 GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_NL, GGML_TYPE_IQ4_XS}) {
+            for (std::array<int64_t, 2> mk : std::vector<std::array<int64_t, 2>>{{17408, 5120}, {5120, 17408}, {6144, 5120}}) {
+                for (int bs = 2; bs <= 8; ++bs) {
+                    test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, mk[0], bs, mk[1], {1, 1}, {1, 1}));
+                }
+            }
+        }
+        return test_cases;
+    }
+
     if (getenv("DENSEX_TYPESPEED")) {
+        test_cases.clear();
         for (ggml_type type_a : {GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_0, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K,
                                  GGML_TYPE_Q8_0, GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS,
                                  GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_NL, GGML_TYPE_IQ4_XS}) {

@@ -319,6 +319,35 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
     if (!ggml_is_quantized(type)) {
         return false;
     }
+    // DenseX: DENSEX_MMVQ_MAX=<n> forces MMVQ for ne11 <= n on every GPU (A/B and sweeps; 8 = upstream default)
+    static const int densex_mmvq_max = getenv("DENSEX_MMVQ_MAX") ? atoi(getenv("DENSEX_MMVQ_MAX")) : -1;
+    if (densex_mmvq_max >= 0) {
+        return ne11 <= densex_mmvq_max;
+    }
+    if (GGML_CUDA_CC_IS_NVIDIA(cc) && cc == GGML_CUDA_CC_AMPERE_GA10X) {
+        switch (type) { // tuned on RTX 3060 (DenseX #35: bench/run_mmvq_sweep.ps1, Qwen 3.8 27B projection shapes)
+            case GGML_TYPE_Q3_K:
+                return ne11 <= 1;
+            case GGML_TYPE_Q2_K:
+            case GGML_TYPE_Q4_K:
+            case GGML_TYPE_Q5_K:
+            case GGML_TYPE_Q6_K:
+                return ne11 <= 2;
+            case GGML_TYPE_Q4_0:
+            case GGML_TYPE_Q8_0:
+            case GGML_TYPE_IQ2_XXS:
+            case GGML_TYPE_IQ3_S:
+            case GGML_TYPE_IQ4_NL:
+                return ne11 <= 3;
+            case GGML_TYPE_IQ2_XS:
+            case GGML_TYPE_IQ2_S:
+            case GGML_TYPE_IQ3_XXS:
+            case GGML_TYPE_IQ4_XS:
+                return ne11 <= 4;
+            default:
+                return ne11 <= MMVQ_MAX_BATCH_SIZE;
+        }
+    }
     // k-quants cost more to decode and mvq redoes that per column, so MMQ wins sooner.
     // Only list quant-types MMQ supports, others would fall back to cuBLAS.
     if (GGML_CUDA_CC_IS_NVIDIA(cc) && cc == GGML_CUDA_CC_ADA_LOVELACE) {
