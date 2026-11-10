@@ -737,7 +737,14 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
                         return BEST_FATTN_KERNEL_VEC;
                     }
                 } else {
-                    if (Q->ne[1] == 1) {
+                    // DenseX (FA1): with in-place quantized K/V the MMA kernel packs the GQA heads and reads K/V once;
+                    // the vec kernel runs every Q head separately (6x the dequant work at GQA 6). 120K q4_0: 3.07 -> 1.50 ms.
+                    // On by default; DENSEX_FA_DECODE_MMA=0 restores the vec kernel.
+                    static const bool decode_mma = [] {
+                        const char * env = getenv("DENSEX_FA_DECODE_MMA");
+                        return env == nullptr || atoi(env) != 0;
+                    }();
+                    if (Q->ne[1] == 1 && !(decode_mma && ggml_cuda_fattn_mma_native_kv(cc, dst))) {
                         return BEST_FATTN_KERNEL_VEC;
                     }
                 }

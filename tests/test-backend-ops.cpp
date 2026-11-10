@@ -12457,6 +12457,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
             test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 32768, nb, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, tv));
         }
     }
+    // DenseX: 120K decode on the 128K production config (K4V4): MTP draft (1 token) and verify batch (13 tokens)
+    for (ggml_type t : {GGML_TYPE_Q4_0, GGML_TYPE_F16}) {
+        for (int64_t nb : {1, 13}) {
+            test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 122880, nb, true, false, 0, 0, GGML_PREC_F32, t, t));
+        }
+    }
 
     // sparse decode at long context
     test_cases.emplace_back(new test_flash_attn_ext(512, 512, 1, { 8, 1}, 49152, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, false,    0));
