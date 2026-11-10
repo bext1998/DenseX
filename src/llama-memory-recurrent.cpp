@@ -19,13 +19,15 @@
 // llama_memory_recurrent
 //
 
-// DenseX: opt-in deferred-commit mode for the GDN recurrent memory (DENSEX_GDN_DEFERRED=1)
-static bool llama_gdn_deferred_enabled() {
-    static const bool enabled = [] {
+// DenseX: deferred-commit mode for the GDN recurrent memory. DENSEX_GDN_DEFERRED unset: on for the
+// validated arch (dense QWEN35) with a single sequence; =1: also the other GDN archs; =0: off.
+// Returns -1 when unset.
+static int llama_gdn_deferred_env() {
+    static const int v = [] {
         const char * env = getenv("DENSEX_GDN_DEFERRED");
-        return env != nullptr && atoi(env) != 0;
+        return env == nullptr ? -1 : (atoi(env) != 0 ? 1 : 0);
     }();
-    return enabled;
+    return v;
 }
 
 llama_memory_recurrent::llama_memory_recurrent(
@@ -43,9 +45,12 @@ llama_memory_recurrent::llama_memory_recurrent(
     // (1 + n_rs_seq) full state snapshots. Only the GDN archs whose graph builds the deferred branch
     // may enable it, and only with a single sequence.
     LLAMA_LOG_INFO("\n");
-    bool want_deferred = llama_gdn_deferred_enabled();
+    const int env_deferred = llama_gdn_deferred_env();
+    bool want_deferred = env_deferred == 1 || (env_deferred == -1 && model.arch == LLM_ARCH_QWEN35);
     if (want_deferred && n_seq_max > 1) {
-        LLAMA_LOG_WARN("%s: DENSEX_GDN_DEFERRED needs a single sequence (n_seq_max = %u), keeping the snapshot rollback path\n", __func__, n_seq_max);
+        if (env_deferred == 1) {
+            LLAMA_LOG_WARN("%s: DENSEX_GDN_DEFERRED needs a single sequence (n_seq_max = %u), keeping the snapshot rollback path\n", __func__, n_seq_max);
+        }
         want_deferred = false;
     }
     if (want_deferred) {
@@ -61,6 +66,9 @@ llama_memory_recurrent::llama_memory_recurrent(
     }
     gdn_deferred = want_deferred;
     gdn_C        = n_rs_seq + 1;
+    if (gdn_deferred) {
+        LLAMA_LOG_INFO("%s: GDN deferred commit on (capacity %u, DENSEX_GDN_DEFERRED=0 to disable)\n", __func__, gdn_C);
+    }
     n_stored.assign(n_seq_max, 0);
 
     head = 0;
