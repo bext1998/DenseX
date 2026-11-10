@@ -12380,6 +12380,22 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // DenseX type-speed table (queue #27): every Qwen 3.8 27B projection shape {m (out), k (in)} for each candidate
+    // GGUF type, at decode / MTP verify batch sizes. Run with -p "k=...,bs=..." style filters or the whole set.
+    if (getenv("DENSEX_TYPESPEED")) {
+        for (ggml_type type_a : {GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_0, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K,
+                                 GGML_TYPE_Q8_0, GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS,
+                                 GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_NL, GGML_TYPE_IQ4_XS}) {
+            for (std::array<int64_t, 2> mk : std::vector<std::array<int64_t, 2>>{{17408, 5120}, {5120, 17408}, {10240, 5120},
+                                                                               {12288, 5120}, {6144, 5120}, {5120, 6144}, {248320, 5120}}) {
+                for (int bs : {1, 4, 8, 13, 16}) {
+                    test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, mk[0], bs, mk[1], {1, 1}, {1, 1}));
+                }
+            }
+        }
+        return test_cases;
+    }
+
     // Q4_K multi-column mat-vec
     for (int64_t m : {4096, 6144, 6272, 14336}) {
         for (int bs : {1, 2, 3, 4, 8}) {
