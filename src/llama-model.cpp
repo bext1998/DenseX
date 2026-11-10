@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cmath>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <numeric>
@@ -2022,8 +2023,93 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     }
 
     load_tensors_hadamard();
+    load_tensors_draft_vocab_order();
 
     return true;
+}
+
+// DenseX #34: DENSEX_DRAFT_VOCAB_ORDER=<tsv> (first column = token id, best first, e.g. bench/draft_vocab_freq.py)
+// reorders the rows of output.weight by that rank, ids missing from the file following in id order. The MTP draft
+// with DENSEX_DRAFT_VOCAB=K then reads the K top-ranked tokens as a prefix view of the same head (no extra VRAM), and
+// the graph scatters target and draft logits back to token-id order through densex_vocab_order.
+void llama_model_base::load_tensors_draft_vocab_order() {
+    const char * path = getenv("DENSEX_DRAFT_VOCAB_ORDER");
+    if (path == nullptr || *path == '\0') {
+        return;
+    }
+    if (arch != LLM_ARCH_QWEN35) {
+        throw std::runtime_error("DENSEX_DRAFT_VOCAB_ORDER is only implemented for qwen35");
+    }
+    if (output == nullptr || output == tok_embd || output_s != nullptr || hdmd.tied_output) {
+        throw std::runtime_error("DENSEX_DRAFT_VOCAB_ORDER needs an untied output.weight without per-row scales");
+    }
+    if (output->buffer == nullptr || ggml_backend_buffer_is_host(output->buffer)) {
+        throw std::runtime_error("DENSEX_DRAFT_VOCAB_ORDER needs output.weight in device memory (host weights may be mmapped)");
+    }
+
+    const int64_t n_rows = output->ne[1];
+    std::vector<int32_t> pos(n_rows, -1);
+    std::vector<int32_t> order;
+    order.reserve(n_rows);
+    {
+        std::ifstream f(path);
+        if (!f) {
+            throw std::runtime_error(format("DENSEX_DRAFT_VOCAB_ORDER: cannot open %s", path));
+        }
+        std::string line;
+        while (std::getline(f, line)) {
+            if (line.empty()) {
+                continue;
+            }
+            const long long id = std::stoll(line);
+            if (id < 0 || id >= n_rows || pos[id] >= 0) {
+                throw std::runtime_error(format("DENSEX_DRAFT_VOCAB_ORDER: bad or repeated token id %lld", id));
+            }
+            pos[id] = (int32_t) order.size();
+            order.push_back((int32_t) id);
+        }
+    }
+    const size_t n_ranked = order.size();
+    for (int64_t id = 0; id < n_rows; ++id) {
+        if (pos[id] < 0) {
+            pos[id] = (int32_t) order.size();
+            order.push_back((int32_t) id);
+        }
+    }
+
+    // row r of the new head is row order[r] of the old one
+    const size_t row_size = output->nb[1];
+    std::vector<uint8_t> old_data(ggml_nbytes(output));
+    ggml_backend_tensor_get(output, old_data.data(), 0, old_data.size());
+    const int64_t chunk = 4096;
+    std::vector<uint8_t> buf(chunk * row_size);
+    for (int64_t r0 = 0; r0 < n_rows; r0 += chunk) {
+        const int64_t nr = std::min(chunk, n_rows - r0);
+        for (int64_t r = 0; r < nr; ++r) {
+            memcpy(buf.data() + r * row_size, old_data.data() + (size_t) order[r0 + r] * row_size, row_size);
+        }
+        ggml_backend_tensor_set(output, buf.data(), r0 * row_size, nr * row_size);
+    }
+
+    ggml_init_params params = {
+        /*.mem_size   =*/ ggml_tensor_overhead(),
+        /*.mem_buffer =*/ NULL,
+        /*.no_alloc   =*/ true,
+    };
+    ggml_context_ptr ctx { ggml_init(params) };
+    densex_vocab_order = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_I32, n_rows);
+    ggml_set_name(densex_vocab_order, "densex.vocab_order");
+    ggml_backend_buffer_ptr buffer { ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), ggml_backend_buffer_get_type(output->buffer)) };
+    if (!buffer) {
+        throw std::runtime_error("unable to allocate the DENSEX_DRAFT_VOCAB_ORDER position buffer");
+    }
+    ggml_backend_buffer_set_usage(buffer.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    ggml_backend_tensor_set(densex_vocab_order, order.data(), 0, order.size() * sizeof(int32_t));
+    std::vector<ggml_backend_buffer_ptr> buffers;
+    buffers.emplace_back(std::move(buffer));
+    pimpl->ctxs_bufs.emplace_back(std::move(ctx), std::move(buffers));
+
+    LLAMA_LOG_INFO("%s: output rows reordered by %s (%zu ranked ids, %lld rows)\n", __func__, path, n_ranked, (long long) n_rows);
 }
 
 // read and check the prism.hadamard metadata, and record the folded weights (load_tensors_hadamard makes the tensors)

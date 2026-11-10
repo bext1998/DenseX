@@ -1,6 +1,23 @@
 #include "models.h"
 #include "llama-memory-recurrent.h"
 
+// DenseX #34: logits [n_rows, n_tokens] over the first n_rows rows of a head reordered by DENSEX_DRAFT_VOCAB_ORDER,
+// to [n_vocab, n_tokens] in token-id order (out[order[r]] = cur[r]; ids outside those rows get -inf). A scatter
+// (set_rows, one thread per element), not a gather: CUDA get_rows starts one block per row, ~10x slower on 1-float rows.
+static ggml_tensor * densex_logits_to_token_order(ggml_context * ctx, const llama_model & model, ggml_tensor * cur) {
+    if (model.densex_vocab_order == nullptr) {
+        return cur;
+    }
+    const int64_t n_vocab = model.densex_vocab_order->ne[0];
+    const int64_t n_rows = cur->ne[0];
+    const int64_t n_tokens = cur->ne[1];
+    ggml_tensor * src = n_tokens == 1 ? ggml_reshape_2d(ctx, cur, 1, n_rows) : ggml_cont(ctx, ggml_transpose(ctx, cur));
+    ggml_tensor * dst = ggml_fill(ctx, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_tokens, n_vocab), -INFINITY);
+    ggml_tensor * ids = n_rows == n_vocab ? model.densex_vocab_order : ggml_view_1d(ctx, model.densex_vocab_order, n_rows, 0);
+    dst = ggml_set_rows(ctx, dst, src, ids); // [n_tokens, n_vocab]
+    return n_tokens == 1 ? ggml_reshape_2d(ctx, dst, n_vocab, 1) : ggml_cont(ctx, ggml_transpose(ctx, dst));
+}
+
 void llama_model_qwen35::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,       hparams.f_norm_rms_eps);
     ml.get_key_or_arr(LLM_KV_ROPE_DIMENSION_SECTIONS,    hparams.rope_sections, 4, true);
@@ -231,6 +248,7 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
 
     // LM head
     cur = build_lora_mm(model.output, cur, model.output_s);
+    cur = densex_logits_to_token_order(ctx0, model, cur);
 
     cb(cur, "result_output", -1);
     res->t_logits = cur;
@@ -663,23 +681,29 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     ggml_tensor * head_s = layer.nextn.shared_head_head ? layer.nextn.shared_head_head_s : model.output_s;
     GGML_ASSERT(head_w && "QWEN35 MTP: missing LM head (nextn.shared_head_head or model.output)");
 
-    // DenseX: DENSEX_DRAFT_VOCAB=N drafts over the first N token ids only (a view of the head's first N rows,
-    // no copy); the other logits are -inf. Output stays lossless because the target verifies every draft;
-    // only the acceptance rate can change.
+    // DenseX: DENSEX_DRAFT_VOCAB=N drafts over the head's first N rows only (a view, no copy): the first N token
+    // ids, or the N top-ranked ids when DENSEX_DRAFT_VOCAB_ORDER reordered the rows. The other logits are -inf.
+    // Output stays lossless because the target verifies every draft; only the acceptance rate can change.
     static const int64_t n_draft_vocab = [] {
         const char * env = getenv("DENSEX_DRAFT_VOCAB");
         return env ? (int64_t) atoll(env) : (int64_t) 0;
     }();
     const int64_t n_vocab_head = head_w->ne[1];
+    const bool reordered = head_w == model.output && model.densex_vocab_order != nullptr;
     if (n_draft_vocab > 0 && n_draft_vocab < n_vocab_head) {
         GGML_ASSERT(head_s == nullptr && "DENSEX_DRAFT_VOCAB: per-row head scales are not supported");
         ggml_tensor * head_v = ggml_view_2d(ctx0, head_w, head_w->ne[0], n_draft_vocab, head_w->nb[1], 0);
         cur = build_lora_mm(head_v, cur, nullptr);
-        ggml_tensor * rest = ggml_fill(ctx0,
-                ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_vocab_head - n_draft_vocab, cur->ne[1]), -INFINITY);
-        cur = ggml_concat(ctx0, cur, rest, 0);
+        if (!reordered) {
+            ggml_tensor * rest = ggml_fill(ctx0,
+                    ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_vocab_head - n_draft_vocab, cur->ne[1]), -INFINITY);
+            cur = ggml_concat(ctx0, cur, rest, 0);
+        }
     } else {
         cur = build_lora_mm(head_w, cur, head_s);
+    }
+    if (reordered) {
+        cur = densex_logits_to_token_order(ctx0, model, cur);
     }
     cb(cur, "result_output", -1);
 
