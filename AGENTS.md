@@ -15,7 +15,9 @@ In practice:
 ## Read first
 
 `README.md` (what DenseX is, switches, build). When this checkout sits inside the owner's private research workspace, project rules live there as well:
-- `../../AGENTS.md`: project rules, collaboration and the task queue (`docs/tasks/QUEUE.md`).
+- `../../AGENTS.md`: project rules and collaboration.
+
+Work items are tracked as GitHub issues (https://github.com/bext1998/DenseX/issues): take work from an issue, label it `in-progress` while working, comment the result (numbers, commit) and close it. Issues are public: no agent costs, local absolute paths or personal data.
 - `../SPEC.md` (section 12: version control), `../NOTES.md` (experiment log), `../MEMORY_AUDIT.md`.
 
 ## Version control
