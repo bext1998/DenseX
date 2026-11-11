@@ -2730,6 +2730,20 @@ static const void * ggml_cuda_graph_get_key(ggml_cgraph * cgraph) {
     return cgraph->nodes[0];
 }
 
+static ggml_cuda_graph::node_properties ggml_cuda_graph_node_props(const ggml_tensor * node) {
+    ggml_cuda_graph::node_properties prop = {};
+    memcpy(&prop.node, node, sizeof(ggml_tensor));
+
+    for (int j = 0; j < GGML_MAX_SRC; ++j) {
+        if (node->src[j]) {
+            prop.node_src_data_ptrs[j] = node->src[j]->data;
+            memcpy(prop.node_src_ne[j], node->src[j]->ne, sizeof(prop.node_src_ne[j]));
+            memcpy(prop.node_src_nb[j], node->src[j]->nb, sizeof(prop.node_src_nb[j]));
+        }
+    }
+    return prop;
+}
+
 static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph) {
     bool res = false;
 
@@ -2742,6 +2756,22 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
             GGML_LOG_DEBUG("CUDA Graph id %zu reused\n", cgraph->uid);
         }
         GGML_ASSERT((int)graph->node_props.size() == cgraph->n_nodes);
+        // DenseX: DENSEX_GRAPH_VERIFY=1 checks that a reused uid really has the captured pointers, shapes and strides
+        static const bool verify = ggml_cuda_env_flag("DENSEX_GRAPH_VERIFY");
+        if (verify) {
+            static bool announced = false;
+            if (!announced) {
+                announced = true;
+                GGML_LOG_WARN("DENSEX_GRAPH_VERIFY: checking reused CUDA graphs (first reuse: uid %zu, %d nodes)\n", cgraph->uid, cgraph->n_nodes);
+            }
+            for (int i = 0; i < cgraph->n_nodes; i++) {
+                const ggml_cuda_graph::node_properties prop = ggml_cuda_graph_node_props(cgraph->nodes[i]);
+                if (memcmp(&graph->node_props[i], &prop, sizeof(prop)) != 0) {
+                    GGML_ABORT("CUDA graph uid %zu reused but node %d (%s, %s) changed since capture",
+                        cgraph->uid, i, cgraph->nodes[i]->name, ggml_op_desc(cgraph->nodes[i]));
+                }
+            }
+        }
         return false;
     }
 
@@ -2754,16 +2784,7 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
     }
 
     for (int i = 0; i < cgraph->n_nodes; i++) {
-        ggml_cuda_graph::node_properties prop = {};
-        memcpy(&prop.node, cgraph->nodes[i], sizeof(ggml_tensor));
-
-        for (int j = 0; j < GGML_MAX_SRC; ++j) {
-            if (cgraph->nodes[i]->src[j]) {
-                prop.node_src_data_ptrs[j] = cgraph->nodes[i]->src[j]->data;
-                memcpy(prop.node_src_ne[j], cgraph->nodes[i]->src[j]->ne, sizeof(prop.node_src_ne[j]));
-                memcpy(prop.node_src_nb[j], cgraph->nodes[i]->src[j]->nb, sizeof(prop.node_src_nb[j]));
-            }
-        }
+        const ggml_cuda_graph::node_properties prop = ggml_cuda_graph_node_props(cgraph->nodes[i]);
 
         if (res || memcmp(&graph->node_props[i], &prop, sizeof(prop)) != 0) {
             graph->node_props[i] = prop;
