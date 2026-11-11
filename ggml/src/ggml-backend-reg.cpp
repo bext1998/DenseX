@@ -34,28 +34,8 @@
 #include "ggml-cuda.h"
 #endif
 
-#ifdef GGML_USE_METAL
-#include "ggml-metal.h"
-#endif
-
-#ifdef GGML_USE_SYCL
-#include "ggml-sycl.h"
-#endif
-
-#ifdef GGML_USE_VULKAN
-#include "ggml-vulkan.h"
-#endif
-
-#ifdef GGML_USE_WEBGPU
-#include "ggml-webgpu.h"
-#endif
-
 #ifdef GGML_USE_ZDNN
 #include "ggml-zdnn.h"
-#endif
-
-#ifdef GGML_USE_OPENCL
-#include "ggml-opencl.h"
 #endif
 
 #ifdef GGML_USE_HEXAGON
@@ -64,10 +44,6 @@
 
 #ifdef GGML_USE_BLAS
 #include "ggml-blas.h"
-#endif
-
-#ifdef GGML_USE_VIRTGPU_FRONTEND
-#include "ggml-virtgpu.h"
 #endif
 
 #ifdef GGML_USE_CANN
@@ -116,32 +92,8 @@ struct ggml_backend_registry {
 #ifdef GGML_USE_CUDA
         register_backend(ggml_backend_cuda_reg());
 #endif
-#ifdef GGML_USE_METAL
-        register_backend(ggml_backend_metal_reg());
-#endif
-#ifdef GGML_USE_SYCL
-        register_backend(ggml_backend_sycl_reg());
-#endif
-#ifdef GGML_USE_VULKAN
-    // Add runtime disable check
-    if (getenv("GGML_DISABLE_VULKAN") == nullptr) {
-        register_backend(ggml_backend_vk_reg());
-    } else {
-        GGML_LOG_DEBUG("Vulkan backend disabled by GGML_DISABLE_VULKAN environment variable\n");
-    }
-#endif
-#ifdef GGML_USE_WEBGPU
-        register_backend(ggml_backend_webgpu_reg());
-#endif
 #ifdef GGML_USE_ZDNN
         register_backend(ggml_backend_zdnn_reg());
-#endif
-#ifdef GGML_USE_VIRTGPU_FRONTEND
-        register_backend(ggml_backend_virtgpu_reg());
-#endif
-
-#ifdef GGML_USE_OPENCL
-        register_backend(ggml_backend_opencl_reg());
 #endif
 #ifdef GGML_USE_ZENDNN
         register_backend(ggml_backend_zendnn_reg());
@@ -573,11 +525,6 @@ void ggml_backend_load_all_from_path(const char * dir_path) {
     ggml_backend_load_best("cann", silent, dir_path);
     ggml_backend_load_best("cuda", silent, dir_path);
     ggml_backend_load_best("hip", silent, dir_path);
-    ggml_backend_load_best("metal", silent, dir_path);
-    ggml_backend_load_best("sycl", silent, dir_path);
-    ggml_backend_load_best("vulkan", silent, dir_path);
-    ggml_backend_load_best("virtgpu", silent, dir_path);
-    ggml_backend_load_best("opencl", silent, dir_path);
     ggml_backend_load_best("hexagon", silent, dir_path);
     ggml_backend_load_best("musa", silent, dir_path);
     ggml_backend_load_best("openvino", silent, dir_path);

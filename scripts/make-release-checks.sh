@@ -136,7 +136,7 @@ else
         "https://ghcr.io/token?scope=repository:${CONTAINER_REPO}:pull&service=ghcr.io" \
         | grep -oP '"token"\s*:\s*"\K[^"]+')"
 
-    VARIANTS=("" "-cuda" "-cuda13" "-vulkan" "-rocm" "-intel" "-musa" "-openvino")
+    VARIANTS=("" "-cuda" "-cuda13" "-rocm" "-musa" "-openvino")
     TYPES=("full" "light" "server")
     CONTAINER_ERR=""
     for type in "${TYPES[@]}"; do

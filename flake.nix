@@ -152,7 +152,6 @@
             packages =
               {
                 default = config.legacyPackages.llamaPackages.llama-cpp;
-                vulkan = config.packages.default.override { useVulkan = true; };
                 windows = config.legacyPackages.llamaPackagesWindows.llama-cpp;
                 python-scripts = config.legacyPackages.llamaPackages.python-scripts;
               }
@@ -173,7 +172,7 @@
             #
             # TODO: Build more once https://github.com/ggml-org/llama.cpp/issues/6346 has been addressed
             checks = {
-              inherit (config.packages) default vulkan;
+              inherit (config.packages) default;
             };
           };
       };

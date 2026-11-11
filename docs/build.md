@@ -15,16 +15,12 @@ The following sections describe how to build with different backends and options
 
 * [CPU Build](#cpu-build)
 * [BLAS Build](#blas-build)
-* [Metal Build](#metal-build)
-* [SYCL](#sycl)
 * [CUDA](#cuda)
 * [MUSA](#musa)
 * [HIP](#hip)
-* [Vulkan](#vulkan)
 * [CANN](#cann)
 * [ZenDNN](#zendnn)
 * [Arm® KleidiAI™](#arm-kleidiai)
-* [OpenCL](#opencl)
 * [Android](#android-1)
 * [OpenVINO](#openvino)
 * [Hexagon](#hexagon)
@@ -132,7 +128,7 @@ Full steps, threading notes, and a fallback for older CMake: [AOCL.md](./backend
 
 ### Intel oneMKL
 
-Building through oneAPI compilers will make avx_vnni instruction set available for intel processors that do not support avx512 and avx512_vnni. Please note that this build config **does not support Intel GPU**. For Intel GPU support, please refer to [llama.cpp for SYCL](./backend/SYCL.md).
+Building through oneAPI compilers will make avx_vnni instruction set available for intel processors that do not support avx512 and avx512_vnni. Please note that this build config **does not support Intel GPU**.
 
 - Using manual oneAPI installation:
   By default, `GGML_BLAS_VENDOR` is set to `Generic`, so if you already sourced intel environment script and assign `-DGGML_BLAS=ON` in cmake, the mkl version of Blas will automatically been selected. Otherwise please install oneAPI and follow the below steps:
@@ -151,20 +147,7 @@ Check [Optimizing and Running LLaMA2 on Intel® CPU](https://builders.intel.com/
 
 Any other BLAS library can be used by setting the `GGML_BLAS_VENDOR` option. See the [CMake documentation](https://cmake.org/cmake/help/latest/module/FindBLAS.html#blas-lapack-vendors) for a list of supported vendors.
 
-## Metal Build
 
-On MacOS, Metal is enabled by default. Using Metal makes the computation run on the GPU.
-To disable the Metal build at compile time use the `-DGGML_METAL=OFF` cmake option.
-
-When built with Metal support, you can explicitly disable GPU inference with the `--n-gpu-layers 0` command-line argument.
-
-## SYCL
-
-SYCL is a higher-level programming model to improve programming productivity on various hardware accelerators.
-
-llama.cpp based on SYCL is used to **support Intel GPU** (Data Center Max series, Flex series, Arc series, Built-in GPU and iGPU).
-
-For detailed info, please refer to [llama.cpp for SYCL](./backend/SYCL.md).
 
 ## CUDA
 
@@ -431,160 +414,6 @@ If your GPU is not officially supported you can use the environment variable [`H
 
 On Linux it is possible to use unified memory architecture (UMA) to share main memory between the CPU and integrated GPU by setting environment variable `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1`. However, this hurts performance for non-integrated GPUs (but enables working with integrated GPUs).
 
-## Vulkan
-
-### For Windows Users:
-**w64devkit**
-
-Download and extract [`w64devkit`](https://github.com/skeeto/w64devkit/releases).
-
-Download and install the [`Vulkan SDK`](https://vulkan.lunarg.com/sdk/home#windows) with the default settings.
-
-Launch `w64devkit.exe` and run the following commands to copy Vulkan dependencies:
-```sh
-SDK_VERSION=1.3.283.0
-cp /VulkanSDK/$SDK_VERSION/Bin/glslc.exe $W64DEVKIT_HOME/bin/
-cp /VulkanSDK/$SDK_VERSION/Lib/vulkan-1.lib $W64DEVKIT_HOME/x86_64-w64-mingw32/lib/
-cp -r /VulkanSDK/$SDK_VERSION/Include/* $W64DEVKIT_HOME/x86_64-w64-mingw32/include/
-cat > $W64DEVKIT_HOME/x86_64-w64-mingw32/lib/pkgconfig/vulkan.pc <<EOF
-Name: Vulkan-Loader
-Description: Vulkan Loader
-Version: $SDK_VERSION
-Libs: -lvulkan-1
-EOF
-
-```
-
-Switch into the `llama.cpp` directory and build using CMake.
-```sh
-cmake -B build -DGGML_VULKAN=ON
-cmake --build build --config Release
-```
-
-**Git Bash MINGW64**
-
-Download and install [`Git-SCM`](https://git-scm.com/downloads/win) with the default settings
-
-Download and install [`Visual Studio Community Edition`](https://visualstudio.microsoft.com/) and make sure you select `C++`
-
-Download and install [`CMake`](https://cmake.org/download/) with the default settings
-
-Download and install the [`Vulkan SDK`](https://vulkan.lunarg.com/sdk/home#windows) with the default settings.
-
-Go into your `llama.cpp` directory and right click, select `Open Git Bash Here` and then run the following commands
-
-```
-cmake -B build -DGGML_VULKAN=ON
-cmake --build build --config Release
-```
-
-Now you can load the model in conversation mode using `Vulkan`
-
-```sh
-build/bin/Release/llama-cli -m "[PATH TO MODEL]" -ngl 100 -c 16384 -t 10 -n -2 -cnv
-```
-
-**MSYS2**
-
-Install [MSYS2](https://www.msys2.org/) and then run the following commands in a UCRT terminal to install dependencies.
-```sh
-pacman -S git \
-    mingw-w64-ucrt-x86_64-gcc \
-    mingw-w64-ucrt-x86_64-cmake \
-    mingw-w64-ucrt-x86_64-vulkan-devel \
-    mingw-w64-ucrt-x86_64-shaderc \
-    mingw-w64-ucrt-x86_64-spirv-headers
-```
-
-Switch into the `llama.cpp` directory and build using CMake.
-```sh
-cmake -B build -DGGML_VULKAN=ON
-cmake --build build --config Release
-```
-
-### For Docker users:
-
-You don't need to install the Vulkan SDK. It will be installed inside the container.
-
-```sh
-# Build the image
-docker build -t llama-cpp-vulkan --target light -f .devops/vulkan.Dockerfile .
-
-# Then, use it:
-docker run -it --rm -v "$(pwd):/app:Z" --device /dev/dri/renderD128:/dev/dri/renderD128 --device /dev/dri/card1:/dev/dri/card1 llama-cpp-vulkan -m "/app/models/YOUR_MODEL_FILE" -p "Building a website can be done in 10 simple steps:" -n 400 -e -ngl 33
-```
-
-### For Linux users:
-
-#### Using the LunarG Vulkan SDK
-
-First, follow the official LunarG instructions for the installation and setup of the Vulkan SDK in the [Getting Started with the Linux Tarball Vulkan SDK](https://vulkan.lunarg.com/doc/sdk/latest/linux/getting_started.html) guide.
-
-> [!IMPORTANT]
-> After completing the first step, ensure that you have used the `source` command on the `setup_env.sh` file inside of the Vulkan SDK in your current terminal session. Otherwise, the build won't work. Additionally, if you close out of your terminal, you must perform this step again if you intend to perform a build. However, there are ways to make this persistent. Refer to the Vulkan SDK guide linked in the first step for more information about any of this.
-
-#### Using system packages
-
-On Debian / Ubuntu, you can install the required dependencies using:
-```sh
-sudo apt-get install libvulkan-dev glslc spirv-headers
-```
-
-SPIRV-Headers (`spirv/unified1/spirv.hpp`) are required for the Vulkan backend and are **not** always pulled in by the Vulkan loader dev package alone. Other distros use names such as `spirv-headers` (Ubuntu / Debian / Arch), or `spirv-headers-devel` (Fedora / openSUSE). On Windows, the LunarG Vulkan SDK’s `Include` directory already contains these headers.
-
-#### Common steps
-
-Second, after verifying that you have followed all of the SDK installation/setup steps, use this command to make sure before proceeding:
-```bash
-vulkaninfo
-```
-
-Then, assuming you have `cd` into your llama.cpp folder and there are no errors with running `vulkaninfo`, you can proceed to build llama.cpp using the CMake commands below:
-```bash
-cmake -B build -DGGML_VULKAN=1
-cmake --build build --config Release
-```
-
-Finally, after finishing your build, you should be able to do something like this:
-```bash
-# Test the output binary
-# "-ngl 99" should offload all of the layers to GPU for most (if not all) models.
-./build/bin/llama-cli -m "PATH_TO_MODEL" -p "Hi you how are you" -ngl 99
-
-# You should see in the output, ggml_vulkan detected your GPU. For example:
-# ggml_vulkan: Using Intel(R) Graphics (ADL GT2) | uma: 1 | fp16: 1 | warp size: 32
-```
-
-### For Mac users:
-
-Generally, follow LunarG's [Getting Started with the MacOS Vulkan SDK](https://vulkan.lunarg.com/doc/sdk/latest/mac/getting_started.html) guide for installation and setup of the Vulkan SDK. There are two options of Vulkan drivers on macOS, both of which implement translation layers to map Vulkan to Metal. They can be hot-swapped by setting the `VK_ICD_FILENAMES` environment variable to point to the respective ICD JSON file.
-
-Check the box for "KosmicKrisp" during the LunarG Vulkan SDK installation.
-
-Set environment variable for the LunarG Vulkan SDK after installation (and optionally add to your shell profile for persistence):
-```bash
-source /path/to/vulkan-sdk/setup-env.sh
-```
-
-#### Using MoltenVK
-
-MoltenVK is the default Vulkan driver installed with the LunarG Vulkan SDK on macOS, so you can use the above environment variable settings as is.
-
-#### Using KosmicKrisp
-
-Override the environment variable for KosmicKrisp:
-```bash
-export VK_ICD_FILENAMES=$VULKAN_SDK/share/vulkan/icd.d/libkosmickrisp_icd.json
-export VK_DRIVER_FILES=$VULKAN_SDK/share/vulkan/icd.d/libkosmickrisp_icd.json
-```
-
-#### Build
-
-This is the only step different from [above](#common-steps) instructions.
-```bash
-cmake -B build -DGGML_VULKAN=1 -DGGML_METAL=OFF
-cmake --build build --config Release
-```
 
 ## CANN
 This provides NPU acceleration using the AI cores of your Ascend NPU. And [CANN](https://www.hiascend.com/en/software/cann) is a hierarchical APIs to help you to quickly build AI applications and service based on Ascend NPU.
@@ -741,116 +570,11 @@ On Windows arm64, use `GGML_KLEIDIAI_SME=<n>` as the temporary diagnostics/debug
 
 If the CPU does not support the required SME-family capability for a bundled kernel, that kernel is disabled regardless of the environment variable.
 
-## OpenCL
-
-This provides GPU acceleration through OpenCL on recent Adreno GPU.
-More information about OpenCL backend can be found in [OPENCL.md](./backend/OPENCL.md) for more information.
-
-### Android
-
-Assume NDK is available in `$ANDROID_NDK`. First, install OpenCL headers and ICD loader library if not available,
-
-```sh
-mkdir -p ~/dev/llm
-cd ~/dev/llm
-
-git clone https://github.com/KhronosGroup/OpenCL-Headers && \
-cd OpenCL-Headers && \
-cp -r CL $ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include
-
-cd ~/dev/llm
-
-git clone https://github.com/KhronosGroup/OpenCL-ICD-Loader && \
-cd OpenCL-ICD-Loader && \
-mkdir build_ndk && cd build_ndk && \
-cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
-  -DOPENCL_ICD_LOADER_HEADERS_DIR=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include \
-  -DANDROID_ABI=arm64-v8a \
-  -DANDROID_PLATFORM=24 \
-  -DANDROID_STL=c++_shared && \
-ninja && \
-cp libOpenCL.so $ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android
-```
-
-Then build llama.cpp with OpenCL enabled,
-
-```sh
-cd ~/dev/llm
-
-git clone https://github.com/ggml-org/llama.cpp && \
-cd llama.cpp && \
-mkdir build-android && cd build-android
-
-cmake .. -G Ninja \
-  -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
-  -DANDROID_ABI=arm64-v8a \
-  -DANDROID_PLATFORM=android-28 \
-  -DBUILD_SHARED_LIBS=OFF \
-  -DGGML_OPENCL=ON
-
-ninja
-```
-
-### Windows Arm64
-
-First, install OpenCL headers and ICD loader library if not available,
-
-```powershell
-mkdir -p ~/dev/llm
-
-cd ~/dev/llm
-git clone https://github.com/KhronosGroup/OpenCL-Headers && cd OpenCL-Headers
-mkdir build && cd build
-cmake .. -G Ninja `
-  -DBUILD_TESTING=OFF `
-  -DOPENCL_HEADERS_BUILD_TESTING=OFF `
-  -DOPENCL_HEADERS_BUILD_CXX_TESTS=OFF `
-  -DCMAKE_INSTALL_PREFIX="$HOME/dev/llm/opencl"
-cmake --build . --target install
-
-cd ~/dev/llm
-git clone https://github.com/KhronosGroup/OpenCL-ICD-Loader && cd OpenCL-ICD-Loader
-mkdir build && cd build
-cmake .. -G Ninja `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DCMAKE_PREFIX_PATH="$HOME/dev/llm/opencl" `
-  -DCMAKE_INSTALL_PREFIX="$HOME/dev/llm/opencl"
-cmake --build . --target install
-```
-
-Then build llama.cpp with OpenCL enabled,
-
-```powershell
-cmake .. -G Ninja `
-  -DCMAKE_TOOLCHAIN_FILE="$HOME/dev/llm/llama.cpp/cmake/arm64-windows-llvm.cmake" `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DCMAKE_PREFIX_PATH="$HOME/dev/llm/opencl" `
-  -DBUILD_SHARED_LIBS=OFF `
-  -DGGML_OPENCL=ON
-ninja
-```
 
 ## Android
 
 To read documentation for how to build on Android, [click here](./android.md)
 
-## WebGPU
-
-The WebGPU backend relies on [Dawn](https://dawn.googlesource.com/dawn). Follow the instructions [here](https://dawn.googlesource.com/dawn/+/refs/heads/main/docs/quickstart-cmake.md) to install Dawn locally so that llama.cpp can find it using CMake. The current implementation is up-to-date with Dawn commit `94c3c9c`.
-
-In the llama.cpp directory, build with CMake:
-
-```
-cmake -B build -DGGML_WEBGPU=ON
-cmake --build build --config Release
-```
-
-### Browser Support
-
-WebGPU allows cross-platform access to the GPU from supported browsers. We utilize [Emscripten](https://emscripten.org/) to compile ggml's WebGPU backend to WebAssembly. Emscripten does not officially support WebGPU bindings yet, but Dawn currently maintains its own WebGPU bindings called emdawnwebgpu.
-
-Follow the instructions [here](https://dawn.googlesource.com/dawn/+/refs/heads/main/src/emdawnwebgpu/) to download or build the emdawnwebgpu package (Note that it might be safer to build the emdawnwebgpu package locally, so that it stays in sync with the version of Dawn you have installed above). When building using CMake, the path to the emdawnwebgpu port file needs to be set with the flag `EMDAWNWEBGPU_DIR`.
 
 ## IBM Z & LinuxONE
 

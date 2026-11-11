@@ -4,7 +4,6 @@
   config,
   stdenv,
   stdenvNoCC,
-  runCommand,
   cmake,
   ninja,
   pkg-config,
@@ -15,35 +14,26 @@
   autoAddDriverRunpath,
   darwin,
   rocmPackages,
-  vulkan-headers,
-  vulkan-loader,
   openssl,
-  shaderc,
-  spirv-headers,
   nodejs,
   importNpmLock,
   useBlas ?
     builtins.all (x: !x) [
       useCuda
-      useMetalKit
       useRocm
-      useVulkan
     ]
     && blas.meta.available,
   useCuda ? config.cudaSupport,
-  useMetalKit ? stdenv.hostPlatform.isAarch64 && stdenv.hostPlatform.isDarwin,
   # Increases the runtime closure size by ~700M
   useMpi ? false,
   useRocm ? config.rocmSupport,
   rocmGpuTargets ? builtins.concatStringsSep ";" rocmPackages.clr.gpuTargets,
-  useVulkan ? false,
   llamaVersion ? "0.0.0", # Arbitrary version, substituted by the flake
 
   # It's necessary to consistently use backendStdenv when building with CUDA support,
   # otherwise we get libstdc++ errors downstream.
   effectiveStdenv ? if useCuda then cudaPackages.backendStdenv else stdenv,
   enableStatic ? effectiveStdenv.hostPlatform.isStatic,
-  precompileMetalShaders ? false,
   useWebUi ? true,
 }:
 
@@ -61,10 +51,8 @@ let
   suffices =
     lib.optionals useBlas [ "BLAS" ]
     ++ lib.optionals useCuda [ "CUDA" ]
-    ++ lib.optionals useMetalKit [ "MetalKit" ]
     ++ lib.optionals useMpi [ "MPI" ]
-    ++ lib.optionals useRocm [ "ROCm" ]
-    ++ lib.optionals useVulkan [ "Vulkan" ];
+    ++ lib.optionals useRocm [ "ROCm" ];
 
   pnameSuffix =
     strings.optionalString (suffices != [ ])
@@ -72,11 +60,6 @@ let
   descriptionSuffix = strings.optionalString (
     suffices != [ ]
   ) ", accelerated with ${strings.concatStringsSep ", " suffices}";
-
-  xcrunHost = runCommand "xcrunHost" { } ''
-    mkdir -p $out/bin
-    ln -s /usr/bin/xcrun $out/bin
-  '';
 
   # apple_sdk is supposed to choose sane defaults, no need to handle isAarch64
   # separately
@@ -86,8 +69,7 @@ let
       Accelerate
       CoreVideo
       CoreGraphics
-    ]
-    ++ optionals useMetalKit [ MetalKit ];
+    ];
 
   cudaBuildInputs = with cudaPackages; [
     cuda_cudart
@@ -99,13 +81,6 @@ let
     clr
     hipblas
     rocblas
-  ];
-
-  vulkanBuildInputs = [
-    vulkan-headers
-    vulkan-loader
-    shaderc
-    spirv-headers
   ];
 in
 
@@ -159,14 +134,6 @@ effectiveStdenv.mkDerivation (finalAttrs: {
     chmod -R u+w tools/ui/dist
   '';
 
-  # With PR#6015 https://github.com/ggml-org/llama.cpp/pull/6015,
-  # `default.metallib` may be compiled with Metal compiler from XCode
-  # and we need to escape sandbox on MacOS to access Metal compiler.
-  # `xcrun` is used find the path of the Metal compiler, which is varible
-  # and not on $PATH
-  # see https://github.com/ggml-org/llama.cpp/pull/6118 for discussion
-  __noChroot = effectiveStdenv.hostPlatform.isDarwin && useMetalKit && precompileMetalShaders;
-
   nativeBuildInputs =
     [
       cmake
@@ -179,8 +146,7 @@ effectiveStdenv.mkDerivation (finalAttrs: {
 
       autoAddDriverRunpath
     ]
-    ++ optionals (effectiveStdenv.hostPlatform.isGnu && enableStatic) [ glibc.static ]
-    ++ optionals (effectiveStdenv.hostPlatform.isDarwin && useMetalKit && precompileMetalShaders) [ xcrunHost ];
+    ++ optionals (effectiveStdenv.hostPlatform.isGnu && enableStatic) [ glibc.static ];
 
   buildInputs =
     optionals effectiveStdenv.hostPlatform.isDarwin darwinBuildInputs
@@ -188,7 +154,6 @@ effectiveStdenv.mkDerivation (finalAttrs: {
     ++ optionals useMpi [ mpi ]
     ++ optionals useRocm rocmBuildInputs
     ++ optionals useBlas [ blas ]
-    ++ optionals useVulkan vulkanBuildInputs
     ++ [ openssl ];
 
   cmakeFlags =
@@ -201,8 +166,6 @@ effectiveStdenv.mkDerivation (finalAttrs: {
       (cmakeBool "GGML_BLAS" useBlas)
       (cmakeBool "GGML_CUDA" useCuda)
       (cmakeBool "GGML_HIP" useRocm)
-      (cmakeBool "GGML_METAL" useMetalKit)
-      (cmakeBool "GGML_VULKAN" useVulkan)
       (cmakeBool "GGML_STATIC" enableStatic)
     ]
     ++ optionals useCuda [
@@ -216,10 +179,6 @@ effectiveStdenv.mkDerivation (finalAttrs: {
     ++ optionals useRocm [
       (cmakeFeature "CMAKE_HIP_COMPILER" "${rocmPackages.llvm.clang}/bin/clang")
       (cmakeFeature "CMAKE_HIP_ARCHITECTURES" rocmGpuTargets)
-    ]
-    ++ optionals useMetalKit [
-      (lib.cmakeFeature "CMAKE_C_FLAGS" "-D__ARM_FEATURE_DOTPROD=1")
-      (cmakeBool "GGML_METAL_EMBED_LIBRARY" (!precompileMetalShaders))
     ];
 
   # Environment variables needed for ROCm
@@ -240,10 +199,6 @@ effectiveStdenv.mkDerivation (finalAttrs: {
     # "unsupported platform" messages. This is mostly a no-op, because
     # cudaPackages would've refused to evaluate anyway.
     badPlatforms = optionals useCuda lib.platforms.darwin;
-
-    # Configurations that are known to result in build failures. Can be
-    # overridden by importing Nixpkgs with `allowBroken = true`.
-    broken = (useMetalKit && !effectiveStdenv.hostPlatform.isDarwin);
 
     description = "Inference of LLaMA model in pure C/C++${descriptionSuffix}";
     homepage = "https://github.com/ggml-org/llama.cpp/";

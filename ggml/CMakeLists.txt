@@ -93,11 +93,9 @@ set(GGML_BACKEND_DIR "" CACHE PATH "ggml: directory to load dynamic backends fro
 # TODO: mark all options as advanced when not GGML_STANDALONE
 
 if (APPLE)
-    set(GGML_METAL_DEFAULT ON)
     set(GGML_BLAS_DEFAULT ON)
     set(GGML_BLAS_VENDOR_DEFAULT "Apple")
 else()
-    set(GGML_METAL_DEFAULT OFF)
     set(GGML_BLAS_DEFAULT OFF)
     set(GGML_BLAS_VENDOR_DEFAULT "Generic")
 endif()
@@ -221,58 +219,15 @@ option(GGML_HIP_MMQ_MFMA                    "ggml: enable MFMA MMA for CDNA in M
 option(GGML_HIP_EXPORT_METRICS              "ggml: enable kernel perf metrics output"         OFF)
 option(GGML_MUSA_GRAPHS                     "ggml: use MUSA graph, experimental, unstable"    OFF)
 option(GGML_MUSA_MUDNN_COPY                 "ggml: enable muDNN for accelerated copy"         OFF)
-option(GGML_VULKAN                          "ggml: use Vulkan"                                OFF)
-option(GGML_VULKAN_CHECK_RESULTS            "ggml: run Vulkan op checks"                      OFF)
-option(GGML_VULKAN_DEBUG                    "ggml: enable Vulkan debug output"                OFF)
-option(GGML_VULKAN_MEMORY_DEBUG             "ggml: enable Vulkan memory debug output"         OFF)
-option(GGML_VULKAN_SHADER_DEBUG_INFO        "ggml: enable Vulkan shader debug info"           OFF)
-option(GGML_VULKAN_VALIDATE                 "ggml: enable Vulkan validation"                  OFF)
-option(GGML_VULKAN_RUN_TESTS                "ggml: run Vulkan tests"                          OFF)
-option(GGML_WEBGPU                          "ggml: use WebGPU"                                OFF)
-option(GGML_WEBGPU_DEBUG                    "ggml: enable WebGPU debug output"                OFF)
-option(GGML_WEBGPU_CPU_PROFILE              "ggml: enable WebGPU profiling (CPU)"             OFF)
-option(GGML_WEBGPU_GPU_PROFILE              "ggml: enable WebGPU profiling (GPU)"             OFF)
-option(GGML_WEBGPU_JSPI                     "ggml: use JSPI for WebGPU"                       ON)
 option(GGML_ZDNN                            "ggml: use zDNN"                                  OFF)
-option(GGML_VIRTGPU                         "ggml: use the VirtGPU/Virglrenderer API Remoting frontend"     OFF)
-option(GGML_VIRTGPU_BACKEND                 "ggml: build the VirtGPU/Virglrenderer API Remoting backend"    OFF)
-option(GGML_METAL                           "ggml: use Metal"                                 ${GGML_METAL_DEFAULT})
-option(GGML_METAL_NDEBUG                    "ggml: disable Metal debugging"                   OFF)
-option(GGML_METAL_SHADER_DEBUG              "ggml: compile Metal with -fno-fast-math"         OFF)
-option(GGML_METAL_EMBED_LIBRARY             "ggml: embed Metal library"                       ${GGML_METAL})
-set   (GGML_METAL_MACOSX_VERSION_MIN "" CACHE STRING
-                                            "ggml: metal minimum macOS version")
-set   (GGML_METAL_STD "" CACHE STRING       "ggml: metal standard version (-std flag)")
-set   (GGML_METAL_TARGET_OS "macos" CACHE STRING
-                                            "ggml: metal -mtargetos OS name (macos, ios, xros, tvos)")
 option(GGML_OPENMP                          "ggml: use OpenMP"                                ON)
 option(GGML_OPENMP_FETCH                    "ggml: fetch LLVM OpenMP"                         OFF)
-option(GGML_SYCL                            "ggml: use SYCL"                                  OFF)
-option(GGML_SYCL_F16                        "ggml: use 16 bit floats for sycl calculations"   OFF)
-option(GGML_SYCL_GRAPH                      "ggml: enable graphs in the SYCL backend"         ON)
-option(GGML_SYCL_HOST_MEM_FALLBACK          "ggml: allow host memory fallback in SYCL reorder (requires kernel 6.8+)" ON)
-option(GGML_SYCL_SUPPORT_LEVEL_ZERO_API     "ggml: use Level Zero API in SYCL backend"  ON)
-option(GGML_SYCL_DNN                        "ggml: enable oneDNN in the SYCL backend"         ON)
-set   (GGML_SYCL_TARGET "INTEL" CACHE STRING
-                                            "ggml: sycl target device")
-set   (GGML_SYCL_DEVICE_ARCH "" CACHE STRING
-                                            "ggml: sycl device architecture")
 
 option(GGML_OPENVINO                        "ggml: use OPENVINO"                              OFF)
 option(GGML_ET                              "ggml: use ET backend"                            OFF)
 option(GGML_ET_SYSEMU                       "ggml: use ET backend via sysemu"                 OFF)
 
-option(GGML_OPENCL                          "ggml: use OpenCL"                                OFF)
-option(GGML_OPENCL_PROFILING                "ggml: use OpenCL profiling (increases overhead)" OFF)
-option(GGML_OPENCL_EMBED_KERNELS            "ggml: embed kernels"                             ON)
-option(GGML_OPENCL_USE_ADRENO_KERNELS       "ggml: use optimized kernels for Adreno"          ON)
-set   (GGML_OPENCL_TARGET_VERSION "300" CACHE STRING
-                                            "ggml: OpenCL API version to target")
-
 option(GGML_HEXAGON                         "ggml: enable Hexagon backend"                    OFF)
-
-# toolchain for vulkan-shaders-gen
-set   (GGML_VULKAN_SHADERS_GEN_TOOLCHAIN "" CACHE FILEPATH "ggml: toolchain file for vulkan-shaders-gen")
 
 option(GGML_ZENDNN                          "ggml: use ZenDNN"                                OFF)
 option(ZENDNN_ROOT                          "ggml: path to ZenDNN installation"               "")
@@ -333,11 +288,6 @@ set(GGML_PUBLIC_HEADERS
     include/ggml-cpp.h
     include/ggml-cuda.h
     include/ggml-opt.h
-    include/ggml-metal.h
-    include/ggml-virtgpu.h
-    include/ggml-sycl.h
-    include/ggml-vulkan.h
-    include/ggml-webgpu.h
     include/ggml-zendnn.h
     include/ggml-openvino.h
     include/gguf.h)
