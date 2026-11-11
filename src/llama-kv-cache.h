@@ -3,6 +3,7 @@
 #include "llama-batch.h"
 #include "llama-graph.h"
 #include "llama-kv-cells.h"
+#include "llama-kv-storage.h"
 #include "llama-memory.h"
 
 #include <unordered_map>
@@ -255,18 +256,6 @@ private:
     const llama_model & model;
     const llama_hparams & hparams;
 
-    struct kv_layer {
-        // layer index in the model
-        // note: can be different from the layer index in the KV cache
-        uint32_t il;
-
-        ggml_tensor * k;
-        ggml_tensor * v;
-
-        std::vector<ggml_tensor *> k_stream;
-        std::vector<ggml_tensor *> v_stream;
-    };
-
     bool v_trans = true;  // the value tensor is transposed
 
     const uint32_t n_seq_max = 1;
@@ -297,8 +286,8 @@ private:
     // this is the SWA type of the cache - not to be confused with the model SWA type
     const llama_swa_type swa_type = LLAMA_SWA_TYPE_NONE;
 
-    // ggml contexts for the KV cache along with the allocated backend buffers:
-    std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> ctxs_bufs;
+    // DenseX (issue #4): the K/V tensors, their buffers and the byte layout of the cells
+    llama_kv_storage storage;
 
     // the current index from where we start searching for a free slot in the ring buffer of KV cells (see find_slot())
     // note: this is not part of the KV state and it's only used to speed-up the find_slot() method
@@ -317,12 +306,8 @@ private:
     // pending stream copies that will be applied during the next update
     stream_copy_info sc_info;
 
-    std::vector<kv_layer> layers;
-
     // model layer id -> KV cache layer id
     std::unordered_map<int32_t, int32_t> map_layer_ids;
-
-    size_t total_size() const;
 
     size_t size_k_bytes() const;
     size_t size_v_bytes() const;
