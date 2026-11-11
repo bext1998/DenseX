@@ -9,7 +9,6 @@
   pkg-config,
   git,
   mpi,
-  blas,
   cudaPackages,
   autoAddDriverRunpath,
   darwin,
@@ -17,12 +16,6 @@
   openssl,
   nodejs,
   importNpmLock,
-  useBlas ?
-    builtins.all (x: !x) [
-      useCuda
-      useRocm
-    ]
-    && blas.meta.available,
   useCuda ? config.cudaSupport,
   # Increases the runtime closure size by ~700M
   useMpi ? false,
@@ -49,8 +42,8 @@ let
   stdenv = throw "Use effectiveStdenv instead";
 
   suffices =
-    lib.optionals useBlas [ "BLAS" ]
-    ++ lib.optionals useCuda [ "CUDA" ]
+    lib.optionals useCuda [ "CUDA" ]
+
     ++ lib.optionals useMpi [ "MPI" ]
     ++ lib.optionals useRocm [ "ROCm" ];
 
@@ -153,7 +146,6 @@ effectiveStdenv.mkDerivation (finalAttrs: {
     ++ optionals useCuda cudaBuildInputs
     ++ optionals useMpi [ mpi ]
     ++ optionals useRocm rocmBuildInputs
-    ++ optionals useBlas [ blas ]
     ++ [ openssl ];
 
   cmakeFlags =
@@ -163,7 +155,6 @@ effectiveStdenv.mkDerivation (finalAttrs: {
       (cmakeBool "BUILD_SHARED_LIBS" (!enableStatic))
       (cmakeBool "CMAKE_SKIP_BUILD_RPATH" true)
       (cmakeBool "GGML_NATIVE" false)
-      (cmakeBool "GGML_BLAS" useBlas)
       (cmakeBool "GGML_CUDA" useCuda)
       (cmakeBool "GGML_HIP" useRocm)
       (cmakeBool "GGML_STATIC" enableStatic)

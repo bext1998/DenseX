@@ -592,7 +592,6 @@ elseif (GGML_CPU)
     ggml_add_cpu_backend_variant_impl("")
 endif()
 
-ggml_add_backend(BLAS)
 ggml_add_backend(CUDA)
 ggml_add_backend(HIP)
 ggml_add_backend(MUSA)

@@ -34,10 +34,6 @@
 #include "ggml-cuda.h"
 #endif
 
-#ifdef GGML_USE_BLAS
-#include "ggml-blas.h"
-#endif
-
 namespace fs = std::filesystem;
 
 static std::string path_str(const fs::path & path) {
@@ -67,9 +63,6 @@ struct ggml_backend_registry {
     ggml_backend_registry() {
 #ifdef GGML_USE_CUDA
         register_backend(ggml_backend_cuda_reg());
-#endif
-#ifdef GGML_USE_BLAS
-        register_backend(ggml_backend_blas_reg());
 #endif
 #ifdef GGML_USE_CPU
         register_backend(ggml_backend_cpu_reg());
@@ -478,7 +471,6 @@ void ggml_backend_load_all_from_path(const char * dir_path) {
     bool silent = false;
 #endif
 
-    ggml_backend_load_best("blas", silent, dir_path);
     ggml_backend_load_best("cuda", silent, dir_path);
     ggml_backend_load_best("hip", silent, dir_path);
     ggml_backend_load_best("musa", silent, dir_path);

@@ -20,7 +20,6 @@ singularity-tools.buildImage rec {
   # ROCm is currently affected by https://github.com/NixOS/nixpkgs/issues/276846
   #
   # Expected image sizes:
-  # - cpu/blas: 150M,
   # - cuda, all gencodes: 560M,
   diskSize = 4096 + optionalInt llama-cpp.useRocm 16384;
   memSize = diskSize;

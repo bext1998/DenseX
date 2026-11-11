@@ -13,8 +13,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt upgrade -y && \
     apt install -y --no-install-recommends \
         git cmake ccache ninja-build \
-        # WARNING: Do not use libopenblas-openmp-dev. libopenblas-dev is faster.
-        libopenblas-dev libssl-dev && \
+        libssl-dev && \
+
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -29,9 +29,8 @@ RUN --mount=type=cache,target=/root/.ccache \
         -DLLAMA_BUILD_TESTS=OFF \
         -DGGML_NATIVE=OFF \
         -DGGML_BACKEND_DL=ON \
-        -DGGML_CPU_ALL_VARIANTS=ON \
-        -DGGML_BLAS=ON \
-        -DGGML_BLAS_VENDOR=OpenBLAS && \
+        -DGGML_CPU_ALL_VARIANTS=ON && \
+
     cmake --build build --config Release -j $(nproc) && \
     cmake --install build --prefix /opt/llama.cpp
 
@@ -74,9 +73,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt update -y && \
     apt install -y --no-install-recommends \
-        # WARNING: Do not use libopenblas-openmp-dev. libopenblas-dev is faster.
-        # See: https://github.com/ggml-org/llama.cpp/pull/15915#issuecomment-3317166506
-        curl libgomp1 libopenblas-dev && \
+        curl libgomp1 && \
+
     apt autoremove -y && \
     apt clean -y && \
     rm -rf /tmp/* /var/tmp/* && \

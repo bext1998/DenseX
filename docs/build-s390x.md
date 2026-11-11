@@ -14,15 +14,11 @@ git clone https://github.com/ggml-org/llama.cpp
 cd llama.cpp
 ```
 
-## CPU Build with BLAS
-
-Building llama.cpp with BLAS support is highly recommended as it has shown to provide performance improvements. Make sure to have OpenBLAS installed in your environment.
+## CPU Build
 
 ```bash
 cmake -S . -B build             \
-    -DCMAKE_BUILD_TYPE=Release  \
-    -DGGML_BLAS=ON              \
-    -DGGML_BLAS_VENDOR=OpenBLAS
+    -DCMAKE_BUILD_TYPE=Release
 
 cmake --build build --config Release -j $(nproc)
 ```
@@ -35,8 +31,6 @@ cmake --build build --config Release -j $(nproc)
     ```bash
     cmake -S . -B build             \
         -DCMAKE_BUILD_TYPE=Release  \
-        -DGGML_BLAS=ON              \
-        -DGGML_BLAS_VENDOR=OpenBLAS \
         -DGGML_VXE=OFF
 
     cmake --build build --config Release -j $(nproc)
@@ -46,9 +40,8 @@ cmake --build build --config Release -j $(nproc)
 
     ```bash
     cmake -S . -B build             \
-        -DCMAKE_BUILD_TYPE=Debug    \
-        -DGGML_BLAS=ON              \
-        -DGGML_BLAS_VENDOR=OpenBLAS
+        -DCMAKE_BUILD_TYPE=Debug
+
     cmake --build build --config Debug -j $(nproc)
     ```
 
@@ -57,8 +50,6 @@ cmake --build build --config Release -j $(nproc)
     ```bash
     cmake -S . -B build             \
         -DCMAKE_BUILD_TYPE=Release  \
-        -DGGML_BLAS=ON              \
-        -DGGML_BLAS_VENDOR=OpenBLAS \
         -DBUILD_SHARED_LIBS=OFF
 
     cmake --build build --config Release -j $(nproc)
@@ -156,10 +147,6 @@ Note: IFL count does not equate to vCPU count.
 ### 3. SMT vs NOSMT (Simultaneous Multithreading)
 
 It is strongly recommended to disable SMT via the kernel boot parameters as it negatively affects performance. Please refer to your Linux distribution's guide on disabling SMT via kernel boot parameters.
-
-### 4. BLAS vs NOBLAS
-
-IBM VXE/VXE2 SIMD acceleration depends on the BLAS implementation. It is strongly recommended to use BLAS.
 
 ## Frequently Asked Questions (FAQ)
 

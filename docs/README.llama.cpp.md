@@ -76,8 +76,6 @@ The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-or
 
 | Backend | Target devices |
 | --- | --- |
-| [BLAS](docs/build.md#blas-build) | All |
-| [BLIS](docs/backend/BLIS.md) | All |
 | [CUDA](docs/build.md#cuda) | Nvidia GPU |
 | [HIP](docs/build.md#hip) | AMD GPU |
 | [MUSA](docs/build.md#musa) | Moore Threads GPU |

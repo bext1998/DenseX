@@ -92,14 +92,6 @@ set(GGML_BACKEND_DIR "" CACHE PATH "ggml: directory to load dynamic backends fro
 
 # TODO: mark all options as advanced when not GGML_STANDALONE
 
-if (APPLE)
-    set(GGML_BLAS_DEFAULT ON)
-    set(GGML_BLAS_VENDOR_DEFAULT "Apple")
-else()
-    set(GGML_BLAS_DEFAULT OFF)
-    set(GGML_BLAS_VENDOR_DEFAULT "Generic")
-endif()
-
 if (CMAKE_CROSSCOMPILING OR DEFINED ENV{SOURCE_DATE_EPOCH})
     message(STATUS "Setting GGML_NATIVE_DEFAULT to OFF")
     set(GGML_NATIVE_DEFAULT OFF)
@@ -189,9 +181,6 @@ option(GGML_SCHED_NO_REALLOC                "ggml: disallow reallocations in ggm
 
 # 3rd party libs / backends
 option(GGML_ACCELERATE                      "ggml: enable Accelerate framework"               ON)
-option(GGML_BLAS                            "ggml: use BLAS"                                  ${GGML_BLAS_DEFAULT})
-set(GGML_BLAS_VENDOR ${GGML_BLAS_VENDOR_DEFAULT} CACHE STRING
-                                            "ggml: BLAS library vendor")
 option(GGML_LLAMAFILE                       "ggml: use LLAMAFILE"                             ${GGML_LLAMAFILE_DEFAULT})
 
 option(GGML_CUDA                            "ggml: use CUDA"                                  OFF)
@@ -273,7 +262,6 @@ set(GGML_PUBLIC_HEADERS
     include/ggml-cpu.h
     include/ggml-alloc.h
     include/ggml-backend.h
-    include/ggml-blas.h
     include/ggml-cpp.h
     include/ggml-cuda.h
     include/ggml-opt.h

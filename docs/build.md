@@ -14,7 +14,6 @@ cd llama.cpp
 The following sections describe how to build with different backends and options.
 
 * [CPU Build](#cpu-build)
-* [BLAS Build](#blas-build)
 * [CUDA](#cuda)
 * [MUSA](#musa)
 * [HIP](#hip)
@@ -84,65 +83,6 @@ cmake --build build --config Release
   - **Debian / Ubuntu:** `sudo apt-get install libssl-dev`
   - **Fedora / RHEL / Rocky / Alma:** `sudo dnf install openssl-devel`
   - **Arch / Manjaro:** `sudo pacman -S openssl`
-
-## BLAS Build
-
-Building the program with BLAS support may lead to some performance improvements in prompt processing using batch sizes higher than 32 (the default is 512). Using BLAS doesn't affect the generation performance. There are currently several different BLAS implementations available for build and use:
-
-### Accelerate Framework
-
-This is only available on Mac PCs and it's enabled by default. You can just build using the normal instructions.
-
-### OpenBLAS
-
-This provides BLAS acceleration using only the CPU. Make sure to have OpenBLAS installed on your machine.
-
-- Using `CMake` on Linux:
-
-    ```bash
-    cmake -B build -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS
-    cmake --build build --config Release
-    ```
-
-### BLIS
-
-Check [BLIS.md](./backend/BLIS.md) for more information.
-
-### AMD AOCL-BLAS
-
-AOCL-BLAS is available as a vendor option for the generic `GGML_BLAS` backend.
-
-Source `amd-libs.cfg` from your AOCL install (MT tree by default), then build (CMake 3.27+ recommended for the `AOCL` / `AOCL_mt` vendors):
-
-```bash
-source /opt/aocl/<version>/aocc/MT/amd-libs.cfg   # adjust path; ST tree uses .../ST/amd-libs.cfg
-cmake -B build -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=AOCL_mt -DBLAS_INCLUDE_DIRS="${AOCL_ROOT}/include" -DGGML_NATIVE=ON
-cmake --build build --config Release
-```
-
-Full steps, threading notes, and a fallback for older CMake: [AOCL.md](./backend/AOCL.md).
-
-### Intel oneMKL
-
-Building through oneAPI compilers will make avx_vnni instruction set available for intel processors that do not support avx512 and avx512_vnni. Please note that this build config **does not support Intel GPU**.
-
-- Using manual oneAPI installation:
-  By default, `GGML_BLAS_VENDOR` is set to `Generic`, so if you already sourced intel environment script and assign `-DGGML_BLAS=ON` in cmake, the mkl version of Blas will automatically been selected. Otherwise please install oneAPI and follow the below steps:
-    ```bash
-    source /opt/intel/oneapi/setvars.sh # You can skip this step if  in oneapi-basekit docker image, only required for manual installation
-    cmake -B build -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Intel10_64lp -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_NATIVE=ON
-    cmake --build build --config Release
-    ```
-
-- Using oneAPI docker image:
-  If you do not want to source the environment vars and install oneAPI manually, you can also build the code using intel docker container: [oneAPI-basekit](https://hub.docker.com/r/intel/oneapi-basekit). Then, you can use the commands given above.
-
-Check [Optimizing and Running LLaMA2 on Intel® CPU](https://builders.intel.com/solutionslibrary/optimizing-and-running-llama2-on-intel-cpu) for more information.
-
-### Other BLAS libraries
-
-Any other BLAS library can be used by setting the `GGML_BLAS_VENDOR` option. See the [CMake documentation](https://cmake.org/cmake/help/latest/module/FindBLAS.html#blas-lapack-vendors) for a list of supported vendors.
-
 
 
 ## CUDA
