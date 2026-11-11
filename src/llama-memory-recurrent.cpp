@@ -4,6 +4,7 @@
 #include "llama-impl.h"
 #include "llama-io.h"
 #include "llama-batch.h"
+#include "llama-densex-env.h"
 #include "llama-model.h"
 
 #include <algorithm>
@@ -18,17 +19,6 @@
 //
 // llama_memory_recurrent
 //
-
-// DenseX: deferred-commit mode for the GDN recurrent memory. DENSEX_GDN_DEFERRED unset: on for the
-// validated arch (dense QWEN35) with a single sequence; =1: also the other GDN archs; =0: off.
-// Returns -1 when unset.
-static int llama_gdn_deferred_env() {
-    static const int v = [] {
-        const char * env = getenv("DENSEX_GDN_DEFERRED");
-        return env == nullptr ? -1 : (atoi(env) != 0 ? 1 : 0);
-    }();
-    return v;
-}
 
 llama_memory_recurrent::llama_memory_recurrent(
         const llama_model & model,
@@ -45,7 +35,7 @@ llama_memory_recurrent::llama_memory_recurrent(
     // (1 + n_rs_seq) full state snapshots. Only the GDN archs whose graph builds the deferred branch
     // may enable it, and only with a single sequence.
     LLAMA_LOG_INFO("\n");
-    const int env_deferred = llama_gdn_deferred_env();
+    const int env_deferred = llama_densex_env_get().gdn_deferred;
     bool want_deferred = env_deferred == 1 || (env_deferred == -1 && model.arch == LLM_ARCH_QWEN35);
     if (want_deferred && n_seq_max > 1) {
         if (env_deferred == 1) {

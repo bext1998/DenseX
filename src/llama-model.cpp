@@ -1,6 +1,7 @@
 #include "llama-model.h"
 
 #include "llama-arch.h"
+#include "llama-densex-env.h"
 #include "llama-ext.h"
 #include "llama-hparams.h"
 #include "llama-impl.h"
@@ -2033,8 +2034,8 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
 // with DENSEX_DRAFT_VOCAB=K then reads the K top-ranked tokens as a prefix view of the same head (no extra VRAM), and
 // the graph scatters target and draft logits back to token-id order through densex_vocab_order.
 void llama_model_base::load_tensors_draft_vocab_order() {
-    const char * path = getenv("DENSEX_DRAFT_VOCAB_ORDER");
-    if (path == nullptr || *path == '\0') {
+    const std::string & path = llama_densex_env_get().draft_vocab_order;
+    if (path.empty()) {
         return;
     }
     if (arch != LLM_ARCH_QWEN35) {
@@ -2054,7 +2055,7 @@ void llama_model_base::load_tensors_draft_vocab_order() {
     {
         std::ifstream f(path);
         if (!f) {
-            throw std::runtime_error(format("DENSEX_DRAFT_VOCAB_ORDER: cannot open %s", path));
+            throw std::runtime_error(format("DENSEX_DRAFT_VOCAB_ORDER: cannot open %s", path.c_str()));
         }
         std::string line;
         while (std::getline(f, line)) {
@@ -2109,7 +2110,7 @@ void llama_model_base::load_tensors_draft_vocab_order() {
     buffers.emplace_back(std::move(buffer));
     pimpl->ctxs_bufs.emplace_back(std::move(ctx), std::move(buffers));
 
-    LLAMA_LOG_INFO("%s: output rows reordered by %s (%zu ranked ids, %lld rows)\n", __func__, path, n_ranked, (long long) n_rows);
+    LLAMA_LOG_INFO("%s: output rows reordered by %s (%zu ranked ids, %lld rows)\n", __func__, path.c_str(), n_ranked, (long long) n_rows);
 }
 
 // read and check the prism.hadamard metadata, and record the folded weights (load_tensors_hadamard makes the tensors)

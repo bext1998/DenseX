@@ -1,4 +1,5 @@
 #include "models.h"
+#include "llama-densex-env.h"
 #include "llama-memory-recurrent.h"
 
 // DenseX #34: logits [n_rows, n_tokens] over the first n_rows rows of a head reordered by DENSEX_DRAFT_VOCAB_ORDER,
@@ -684,10 +685,7 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     // DenseX: DENSEX_DRAFT_VOCAB=N drafts over the head's first N rows only (a view, no copy): the first N token
     // ids, or the N top-ranked ids when DENSEX_DRAFT_VOCAB_ORDER reordered the rows. The other logits are -inf.
     // Output stays lossless because the target verifies every draft; only the acceptance rate can change.
-    static const int64_t n_draft_vocab = [] {
-        const char * env = getenv("DENSEX_DRAFT_VOCAB");
-        return env ? (int64_t) atoll(env) : (int64_t) 0;
-    }();
+    const int64_t n_draft_vocab = llama_densex_env_get().draft_vocab;
     const int64_t n_vocab_head = head_w->ne[1];
     const bool reordered = head_w == model.output && model.densex_vocab_order != nullptr;
     if (n_draft_vocab > 0 && n_draft_vocab < n_vocab_head) {
