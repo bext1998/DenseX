@@ -1,0 +1,49 @@
+# DenseX CI: CPU-only build and llama_context state tests on a generated Qwen35 dummy model
+# (save/load/copy/rollback/replay...), with deferred GDN commit on (default) and off.
+# GitHub runners have no GPU; GPU op tests and output checks run locally (research workspace bench/regress.ps1).
+name: DenseX CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  context-tests:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (CPU only)
+        run: >
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+          -DGGML_CUDA=OFF -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=ON -DLLAMA_BUILD_COMMON=ON
+          -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_APP=OFF
+          -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_LLGUIDANCE=OFF
+
+      - name: Build tests
+        run: cmake --build build --config Release --parallel --target test-llama-archs test-llama-context
+
+      - name: Generate Qwen35 dummy model
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force qwen-models | Out-Null
+          build/bin/Release/test-llama-archs.exe -a qwen35 -o qwen-models
+          if (!(Get-ChildItem qwen-models -Filter *.gguf)) { throw 'no Qwen35 model generated' }
+
+      - name: Context tests (deferred GDN default)
+        run: build/bin/Release/test-llama-context.exe --models qwen-models --test ".*" -ngl 0 --fit off
+
+      - name: Context tests (deferred GDN off)
+        env:
+          DENSEX_GDN_DEFERRED: "0"
+        run: build/bin/Release/test-llama-context.exe --models qwen-models --test ".*" -ngl 0 --fit off
