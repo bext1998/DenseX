@@ -14,9 +14,13 @@ Project rules live outside this repository, in the research workspace that conta
 - Commit message: what changed, why, the switch and its default, and the measurement it is based on (result paths, numbers).
 - Every behavior change sits behind a switch (env var or flag) that is off by default, with the original path kept as the reference.
 
-## Code style (kept from upstream, so upstream updates keep merging cleanly)
+## Upstream
 
-- Blend in with the surrounding code; reuse existing infrastructure instead of adding subsystems.
+DenseX is frozen at llama.cpp `620d2225` and no longer merges or tracks upstream (owner decision 2026-11-11, `../SPEC.md` section 12). Later upstream changes are outside references only: evaluate one at a time, write our own version, and ask the owner before porting.
+
+## Code style
+
+- Blend in with the surrounding code; reuse existing infrastructure instead of adding subsystems unless a measured DenseX need requires one.
 - Keep code comments short (1-2 lines), only where needed, in simple English. Mark DenseX changes with a `DenseX` prefix in the comment.
 - Use ASCII only in code and comments: `-`, `->`, `x`, `...` instead of em dash, arrows, multiplication sign or ellipsis.
 - Do not hard-wrap comments or split a line mid-sentence to fit a column width.
