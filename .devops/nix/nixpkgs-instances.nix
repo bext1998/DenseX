@@ -35,11 +35,6 @@
               ]
             ) (p.meta.licenses or (lib.toList p.meta.license));
         };
-        # Ensure dependencies use ROCm consistently
-        pkgsRocm = import inputs.nixpkgs {
-          inherit system;
-          config.rocmSupport = true;
-        };
       };
     };
 }

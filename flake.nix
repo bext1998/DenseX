@@ -123,7 +123,6 @@
             system,
             pkgs,
             pkgsCuda,
-            pkgsRocm,
             ...
           }:
           {
@@ -144,7 +143,6 @@
                 inherit llamaVersion;
               };
               llamaPackagesCuda = pkgsCuda.callPackage .devops/nix/scope.nix { inherit llamaVersion; };
-              llamaPackagesRocm = pkgsRocm.callPackage .devops/nix/scope.nix { inherit llamaVersion; };
             };
 
             # We don't use the overlay here so as to avoid making too many instances of nixpkgs,
@@ -160,9 +158,6 @@
 
                 mpi-cpu = config.packages.default.override { useMpi = true; };
                 mpi-cuda = config.packages.default.override { useMpi = true; };
-              }
-              // lib.optionalAttrs (system == "x86_64-linux") {
-                rocm = config.legacyPackages.llamaPackagesRocm.llama-cpp;
               };
 
             # Packages exposed in `.#checks` will be built by the CI and by

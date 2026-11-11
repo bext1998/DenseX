@@ -12,15 +12,12 @@
   cudaPackages,
   autoAddDriverRunpath,
   darwin,
-  rocmPackages,
   openssl,
   nodejs,
   importNpmLock,
   useCuda ? config.cudaSupport,
   # Increases the runtime closure size by ~700M
   useMpi ? false,
-  useRocm ? config.rocmSupport,
-  rocmGpuTargets ? builtins.concatStringsSep ";" rocmPackages.clr.gpuTargets,
   llamaVersion ? "0.0.0", # Arbitrary version, substituted by the flake
 
   # It's necessary to consistently use backendStdenv when building with CUDA support,
@@ -34,7 +31,6 @@ let
   inherit (lib)
     cmakeBool
     cmakeFeature
-    optionalAttrs
     optionals
     strings
     ;
@@ -44,8 +40,7 @@ let
   suffices =
     lib.optionals useCuda [ "CUDA" ]
 
-    ++ lib.optionals useMpi [ "MPI" ]
-    ++ lib.optionals useRocm [ "ROCm" ];
+    ++ lib.optionals useMpi [ "MPI" ];
 
   pnameSuffix =
     strings.optionalString (suffices != [ ])
@@ -70,11 +65,6 @@ let
     libcublas
   ];
 
-  rocmBuildInputs = with rocmPackages; [
-    clr
-    hipblas
-    rocblas
-  ];
 in
 
 effectiveStdenv.mkDerivation (finalAttrs: {
@@ -145,7 +135,6 @@ effectiveStdenv.mkDerivation (finalAttrs: {
     optionals effectiveStdenv.hostPlatform.isDarwin darwinBuildInputs
     ++ optionals useCuda cudaBuildInputs
     ++ optionals useMpi [ mpi ]
-    ++ optionals useRocm rocmBuildInputs
     ++ [ openssl ];
 
   cmakeFlags =
@@ -156,7 +145,6 @@ effectiveStdenv.mkDerivation (finalAttrs: {
       (cmakeBool "CMAKE_SKIP_BUILD_RPATH" true)
       (cmakeBool "GGML_NATIVE" false)
       (cmakeBool "GGML_CUDA" useCuda)
-      (cmakeBool "GGML_HIP" useRocm)
       (cmakeBool "GGML_STATIC" enableStatic)
     ]
     ++ optionals useCuda [
@@ -166,17 +154,7 @@ effectiveStdenv.mkDerivation (finalAttrs: {
           builtins.concatStringsSep ";" (map dropDot cudaCapabilities)
         )
       )
-    ]
-    ++ optionals useRocm [
-      (cmakeFeature "CMAKE_HIP_COMPILER" "${rocmPackages.llvm.clang}/bin/clang")
-      (cmakeFeature "CMAKE_HIP_ARCHITECTURES" rocmGpuTargets)
     ];
-
-  # Environment variables needed for ROCm
-  env = optionalAttrs useRocm {
-    ROCM_PATH = "${rocmPackages.clr}";
-    HIP_DEVICE_LIB_PATH = "${rocmPackages.rocm-device-libs}/amdgcn/bitcode";
-  };
 
   # TODO(SomeoneSerge): It's better to add proper install targets at the CMake level,
   # if they haven't been added yet.

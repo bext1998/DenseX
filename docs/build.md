@@ -15,8 +15,6 @@ The following sections describe how to build with different backends and options
 
 * [CPU Build](#cpu-build)
 * [CUDA](#cuda)
-* [MUSA](#musa)
-* [HIP](#hip)
 * [Arm® KleidiAI™](#arm-kleidiai)
 * [Android](#android-1)
 * [Notes about GPU-accelerated backends](#notes-about-gpu-accelerated-backends)
@@ -252,106 +250,6 @@ The following compilation options are also available to tweak performance:
 | GGML_CUDA_FORCE_CUBLAS        | Boolean                | false   | Force the use of FP16 cuBLAS instead of custom matrix multiplication kernels for quantized models. There may be issues with numerical overflows (except for V100, CDNA and RDNA4 which use FP32 compute type by default) and memory use will be higher. Prompt processing may become faster on recent datacenter GPUs (the custom kernels were tuned primarily for RTX 3000/4000).   |
 | GGML_CUDA_FA_QUANTS           | `all` or `type_K-type_V` list | q4_0-q4_0;q8_0-q8_0;f16-f16;bf16-bf16 | Select which K/V type combinations to compile the FlashAttention CUDA kernels for. `all` compiles every combination, but compilation takes much longer. Otherwise a `;`-separated list of `type_K-type_V` pairs; f16-f16 is always compiled. Combinations that were not compiled fall back to f16-f16 kernel with a warning. Legal types: f16, bf16, q4_0, q4_1, q5_0, q5_1, q8_0. |
 | GGML_CUDA_FA_ALL_QUANTS       | Boolean                | false   | Deprecated alias for `GGML_CUDA_FA_QUANTS=all`.                                                                                                                                                                                                                                                                                                                               |
-
-## MUSA
-
-This provides GPU acceleration using a Moore Threads GPU. Make sure to have the [MUSA SDK](https://developer.mthreads.com/musa/musa-sdk) installed.
-
-#### Download directly from Moore Threads
-
-You may find the official downloads here: [Moore Threads developer site](https://developer.mthreads.com/sdk/download/musa).
-
-### Compilation
-
-```bash
-cmake -B build -DGGML_MUSA=ON
-cmake --build build --config Release
-```
-
-#### Override Compute Capability Specifications
-
-By default, compute capabilities `2.2` (MTT S4000) and `3.1` (MTT S5000) are enabled, compute capability `2.1` (MTT S70, MTT S80, MTT S3000) is deprecated and has to be enabled explicitly. To customize this behavior, you can specify the `MUSA_ARCHITECTURES` option in the CMake command:
-
-```bash
-cmake -B build -DGGML_MUSA=ON -DMUSA_ARCHITECTURES="31"
-cmake --build build --config Release
-```
-
-This configuration enables only compute capability `3.1` (MTT S5000) during compilation, which can help reduce compilation time.
-
-#### Compilation options
-
-Most of the compilation options available for CUDA should also be available for MUSA, though they haven't been thoroughly tested yet.
-
-- For static builds, add `-DBUILD_SHARED_LIBS=OFF` and `-DCMAKE_POSITION_INDEPENDENT_CODE=ON`:
-  ```
-  cmake -B build -DGGML_MUSA=ON \
-    -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-  cmake --build build --config Release
-  ```
-
-### Runtime MUSA environmental variables
-
-You may set the [musa environmental variables](https://docs.mthreads.com/musa-sdk/musa-sdk-doc-online/programming_guide/Z%E9%99%84%E5%BD%95/) at runtime.
-
-```bash
-# Use `MUSA_VISIBLE_DEVICES` to hide the first compute device.
-MUSA_VISIBLE_DEVICES="-0" ./build/bin/llama-server --model /srv/models/llama.gguf
-```
-
-### Unified Memory
-
-The environment variable `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1` can be used to enable unified memory in Linux. This allows swapping to system RAM instead of crashing when the GPU VRAM is exhausted.
-
-## HIP
-
-This provides GPU acceleration on HIP-supported AMD GPUs.
-Make sure to have ROCm installed.
-You can download it from your Linux distro's package manager or from here: [ROCm Quick Start (Linux)](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/tutorial/quick-start.html#rocm-install-quick).
-
-- Using `CMake` for Linux (assuming a gfx1030-compatible AMD GPU):
-  ```bash
-  HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
-      cmake -S . -B build -DGGML_HIP=ON -DGPU_TARGETS=gfx1030 -DCMAKE_BUILD_TYPE=Release \
-      && cmake --build build --config Release -- -j 16
-  ```
-
-  Note: `GPU_TARGETS` is optional, omitting it will build the code for all GPUs in the current system.
-
-  Note that if you get the following error:
-  ```
-  clang: error: cannot find ROCm device library; provide its path via '--rocm-path' or '--rocm-device-lib-path', or pass '-nogpulib' to build without ROCm device library
-  ```
-  Try searching for a directory under `HIP_PATH` that contains the file
-  `oclc_abi_version_400.bc`. Then, add the following to the start of the
-  command: `HIP_DEVICE_LIB_PATH=<directory-you-just-found>`, so something
-  like:
-  ```bash
-  HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -p)" \
-  HIP_DEVICE_LIB_PATH=<directory-you-just-found> \
-      cmake -S . -B build -DGGML_HIP=ON -DGPU_TARGETS=gfx1030 -DCMAKE_BUILD_TYPE=Release \
-      && cmake --build build -- -j 16
-  ```
-
-- Using `CMake` for Windows (using x64 Native Tools Command Prompt for VS, and assuming a gfx1100-compatible AMD GPU):
-  ```bash
-  set PATH=%HIP_PATH%\bin;%PATH%
-  cmake -S . -B build -G Ninja -DGPU_TARGETS=gfx1100 -DGGML_HIP=ON -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release
-  cmake --build build
-  ```
-  If necessary, adapt `GPU_TARGETS` to the GPU arch you want to compile for. The above example uses `gfx1100` that corresponds to Radeon RX 7900XTX/XT/GRE. You can find a list of targets [here](https://llvm.org/docs/AMDGPUUsage.html#processors)
-  Find your gpu version string by matching the most significant version information from `rocminfo | grep gfx | head -1 | awk '{print $2}'` with the list of processors, e.g. `gfx1035` maps to `gfx1030`.
-
-
-The environment variable [`HIP_VISIBLE_DEVICES`](https://rocm.docs.amd.com/en/latest/understand/gpu_isolation.html#hip-visible-devices) can be used to specify which GPU(s) will be used.
-If your GPU is not officially supported you can use the environment variable [`HSA_OVERRIDE_GFX_VERSION`] set to a similar GPU, for example 10.3.0 on RDNA2 (e.g. gfx1030, gfx1031, or gfx1035) or 11.0.0 on RDNA3. Note that [`HSA_OVERRIDE_GFX_VERSION`] is [not supported on Windows](https://github.com/ROCm/ROCm/issues/2654)
-
-### Unified Memory
-
-On Linux it is possible to use unified memory architecture (UMA) to share main memory between the CPU and integrated GPU by setting environment variable `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1`. However, this hurts performance for non-integrated GPUs (but enables working with integrated GPUs).
-
-
-
 
 ## Arm® KleidiAI™
 KleidiAI provides optimized Arm CPU microkernels used by the ggml CPU backend. Enabling it at build time makes those kernels available; it does not force every operation to use KleidiAI. At runtime, llama.cpp selects the best compatible CPU kernel from the detected CPU features, tensor type, operation shape, and active backend priority.

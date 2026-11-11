@@ -593,8 +593,6 @@ elseif (GGML_CPU)
 endif()
 
 ggml_add_backend(CUDA)
-ggml_add_backend(HIP)
-ggml_add_backend(MUSA)
 
 foreach (target ggml-base ggml)
     target_include_directories(${target} PUBLIC    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include> $<INSTALL_INTERFACE:include>)
