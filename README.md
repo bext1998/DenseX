@@ -1,5 +1,7 @@
 # DenseX
 
+State of The Art for Dense Model Inference at Home.
+
 DenseX is an experimental inference engine for running large **dense** models on low-VRAM consumer GPUs at long context. The first target is Qwen 3.8 27B (GSQ-RCO IQ3_XXS GGUF with MTP head) on a single **RTX 3060 12 GB**.
 
 DenseX started from [llama.cpp](https://github.com/ggml-org/llama.cpp) commit `620d2225` and is now an independent project: it does not track or merge upstream.
@@ -61,7 +63,7 @@ This is the configuration of the results table (thinking off, 512 generated toke
 
 ## License and credits
 
-MIT, see [LICENSE](LICENSE). DenseX is based on llama.cpp / ggml (Copyright (c) 2023-2026 The ggml authors, MIT). The original llama.cpp README is kept in [docs/README.llama.cpp.md](docs/README.llama.cpp.md).
+MIT, see [LICENSE](LICENSE). DenseX modifications Copyright (c) 2026 mazemaze. DenseX is based on llama.cpp / ggml (Copyright (c) 2023-2026 The ggml authors, MIT). The original llama.cpp README is kept in [docs/README.llama.cpp.md](docs/README.llama.cpp.md).
 
 Design references (ideas studied, re-implemented in DenseX's own way): Mirai S server (MIT, Copyright (c) 2026 Cary Palmer), Strata (MIT).
 
