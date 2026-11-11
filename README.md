@@ -1,134 +1,66 @@
-# llama.cpp
+# DenseX
 
-![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
+DenseX is an experimental inference engine for running large **dense** models on low-VRAM consumer GPUs at long context. The first target is Qwen 3.8 27B (GSQ-RCO IQ3_XXS GGUF with MTP head) on a single **RTX 3060 12 GB**.
 
-<div align="center">
+DenseX started from [llama.cpp](https://github.com/ggml-org/llama.cpp) commit `620d2225` and is now an independent project: it does not track or merge upstream.
 
-<b>LLM inference in C/C++</b>
+> **Status: research / experimental.** Tested only on Windows 11 + RTX 3060 12 GB + Ryzen 5 3600X (32 GB RAM). Most DenseX features are opt-in switches, off by default. The code base is being cleaned up (unused backends and model architectures will be removed).
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Release](https://img.shields.io/github/v/release/ggml-org/llama.cpp?filter=v*&color=brightgreen)](https://github.com/ggml-org/llama.cpp/releases?q=tag:v0)
-[![Nightly](https://img.shields.io/github/v/release/ggml-org/llama.cpp?label=nightly&filter=b*&color=orange)](https://github.com/ggml-org/llama.cpp/releases?q=b)
-[![Server](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/server.yml?label=Server)](https://github.com/ggml-org/llama.cpp/actions/workflows/server.yml)
-[![Docker](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/docker.yml?label=Docker)](https://github.com/ggml-org/llama.cpp/actions/workflows/docker.yml)
-[![Winget](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/winget.yml?label=Winget)](https://github.com/ggml-org/llama.cpp/actions/workflows/winget.yml)
+## Results (RTX 3060 12 GB, measured)
 
-[ggml](https://github.com/ggml-org/ggml) / [ops](https://github.com/ggml-org/llama.cpp/blob/master/docs/ops.md) / [maintainer PRs](https://github.com/ggml-org/llama.cpp/issues?q=is%3Apr%20is%3Aopen%20draft%3AFalse%20(author%3Argerganov%20OR%20author%3AKitaitiMakoto%20OR%20author%3Adanbev%20OR%20author%3Aaldehir%20OR%20author%3Amax-krasnyansky%20OR%20author%3ACISC%20OR%20author%3Aggerganov%20OR%20author%3Aam17an%20OR%20author%3Ajhen0409%20OR%20author%3Abartowski1182%20OR%20author%3Anikwen%20OR%20author%3Ahipudding%20OR%20author%3Aravi9%20OR%20author%3AServeurpersoCom%20OR%20author%3Apwilkin%20OR%20author%3Areeselevine%20OR%20author%3Angxson%20OR%20author%3Ajeffbolznv%20OR%20author%3Amarty1885%20OR%20author%3A0cc4m%20OR%20author%3ATitaniumtown%20OR%20author%3Aangt%20OR%20author%3AIMbackK%20OR%20author%3Aarthw%20OR%20author%3AJohannesGaessler%20OR%20author%3AORippler%20OR%20author%3Aruixiang63%20OR%20author%3Axctan%20OR%20author%3Aallozaur%20OR%20author%3Ayomaytk%20OR%20author%3Aaendk%20OR%20author%3Awine99%20OR%20author%3Agaugarg-nv%20OR%20author%3Ataronaeo%20OR%20author%3Aforforever73%20OR%20author%3Alhez%20OR%20author%3Anetrunnereve%20OR%20author%3Afairydreaming)%20sort%3Aupdated-desc) / [dev stats](https://github.com/ggml-org/llama.cpp-dev) / [lib llama API](https://github.com/ggml-org/llama.cpp/issues/9289) / [llama-server REST API](https://github.com/ggml-org/llama.cpp/issues/9291)
+Qwen 3.8 27B IQ3_XXS-mtp, context 131072, MTP draft length 12, K/V cache q4_0, 16 FFN layers streamed from host RAM, draft KV window 32768, frequency-ranked draft vocabulary (49152), temperature 0, two runs each:
 
-</div>
+| Prompt depth | Generation tok/s | Prompt tok/s | Time to first token |
+|---|---|---|---|
+| 4K | 32.2 / 32.3 | 409 | 10 s |
+| 32K | 29.0 / 29.4 | 360 | 89 s |
+| 64K | 29.0 / 29.2 | 311 | 206 s |
+| 96K | 26.2 / 26.2 | 275 | 349 s |
+| 120K | 28.1 / 27.9 | 253 | 474 s |
 
-## Quick start
+Peak VRAM 11857 MiB. At 120K, generation is 13% slower than at 4K.
 
-A few options to get `llama.cpp` installed on your machine:
+## What DenseX adds
 
-```bash
-# curl
-curl -LsSf https://llama.app/install.sh | sh
+| Feature | Switch (default) | Notes |
+|---|---|---|
+| Host-weight prefetch into device slots | `GGML_SCHED_PREFETCH=<slots>` (off) | Weights kept in pinned host RAM (`-ot ...=CPU --load-mode none`) are copied to the GPU each forward, overlapped with compute |
+| FlashAttention reads quantized K/V in place | `GGML_CUDA_FA_NATIVE_KV=1` (off) | No F16 copy of the KV cache in the compute buffer (about 500 MiB saved per context at 128K) |
+| Single-token decode attention on the MMA kernel | `DENSEX_FA_DECODE_MMA=0` disables (on when native K/V is on) | +8% decode at 120K, same output |
+| Gated DeltaNet deferred commit | `DENSEX_GDN_DEFERRED` (on for dense Qwen35) | Cheap rollback of rejected MTP draft tokens |
+| Bounded KV window for MTP drafting | `--spec-draft-kv-window N` (off) | The draft head attends to the last N tokens only |
+| Draft over a reduced vocabulary | `DENSEX_DRAFT_VOCAB_ORDER=<tsv>`, `DENSEX_DRAFT_VOCAB=<K>` (off) | Draft logits over the K most frequent tokens, scattered back to original ids |
+| MMQ stream-k over SM x resident-block slots | `DENSEX_MMQ_SLOTS=0` disables (on) | |
+| MMVQ / MMQ switch point per type for small verify batches | `DENSEX_MMVQ_MAX=<n>` overrides (built-in table) | Thresholds measured on sm86 |
 
-# powershell
-irm https://llama.app/install.ps1 | iex
+Every change is described, with its measurement, in the commit message (`git log`).
+
+## Build (Windows, CUDA)
+
+Requirements: Visual Studio 2022 (C++ tools), CUDA Toolkit 13.0, CMake, Ninja.
+
+```powershell
+pwsh -File scripts/densex/build.ps1 -Target llama-server        # output build/sm86/bin/
+pwsh -File scripts/densex/build.ps1 -Target test-backend-ops -Tests
 ```
 
-- Visit https://llama.app and follow the instructions
-- Run with Docker - see our [Docker documentation](docs/docker.md)
-- Download pre-built binaries from the [releases page](https://github.com/ggml-org/llama.cpp/releases)
-- Build from source by cloning this repository - check out [our build guide](docs/build.md)
+`-Arch 89` or `-Arch 120` builds for other GPUs (compile-tested only). Each build appends a line to `build/<name>/BUILD_INFO.txt` with the commit, a hash of uncommitted changes and the executable hash.
 
-Once installed:
+## Example: 120K on a 12 GB GPU
 
-```sh
-# Download and run a model directly from Hugging Face
-llama cli -hf ggml-org/Qwen3.5-0.8B-GGUF
-
-# Launch OpenAI-compatible API server
-llama serve -hf ggml-org/Qwen3.5-0.8B-GGUF
+```powershell
+$env:GGML_SCHED_PREFETCH = '4'; $env:GGML_OP_OFFLOAD_MIN_BATCH = '1'; $env:GGML_CUDA_FA_NATIVE_KV = '1'
+llama-server -m Swift-1.5-Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf -c 131072 -np 1 -ngl 99 -fa on `
+  -ctk q4_0 -ctv q4_0 --spec-type draft-mtp --spec-draft-n-max 12 --spec-draft-kv-window 32768 `
+  -ot "blk\.(3|7|11|15|19|23|27|31|35|39|43|47|51|55|59|63)\.ffn_(gate|up|down)\.weight=CPU" --load-mode none --jinja
 ```
 
-<table align="center">
-    <tr>
-        <td align="center" width=50%>
-            <img width="1310" height="888" alt="VLM session with `llama cli`" src="https://github.com/user-attachments/assets/88726b48-1713-48aa-a525-95a02e78afc4" />
-            <i>VLM session with <b>llama cli</b></i>
-        </td>
-        <td align="center">
-            <img width="1392" height="958" alt="Built-in web UI against `llama serve` running Qwen 3.6" src="https://github.com/user-attachments/assets/b402f972-2e32-4def-8771-8d849f08cf2e" />
-            <i>Built-in web UI against <b>llama serve</b></i>
-        </td>
-    </tr>
-<table>
+## License and credits
 
-## Description
+MIT, see [LICENSE](LICENSE). DenseX is based on llama.cpp / ggml (Copyright (c) 2023-2026 The ggml authors, MIT). The original llama.cpp README is kept in [docs/README.llama.cpp.md](docs/README.llama.cpp.md).
 
-The main goal of `llama.cpp` is to enable LLM (and VLM) inference with minimal setup and state-of-the-art performance on
-a wide range of hardware - locally and in the cloud.
+Design references (ideas studied, re-implemented in DenseX's own way): Mirai S server (MIT, Copyright (c) 2026 Cary Palmer), Strata (MIT).
 
-- Plain C/C++ implementation without any dependencies
-- Apple silicon is a first-class citizen - optimized via ARM NEON, Accelerate and Metal frameworks
-- AVX, AVX2, AVX512 and AMX support for x86 architectures
-- RVV, ZVFH, ZFH, ZICBOP and ZIHINTPAUSE support for RISC-V architectures
-- 1.5-bit, 2-bit, 3-bit, 4-bit, 5-bit, 6-bit, and 8-bit integer quantization for faster inference and reduced memory use
-- Custom CUDA kernels for running LLMs on NVIDIA GPUs (support for AMD GPUs via HIP and Moore Threads GPUs via MUSA)
-- Vulkan and SYCL backend support
-- CPU+GPU hybrid inference to partially accelerate models larger than the total VRAM capacity
+## 繁體中文摘要
 
-The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-org/ggml) library.
-
-## Supported backends
-
-| Backend | Target devices |
-| --- | --- |
-| [BLAS](docs/build.md#blas-build) | All |
-| [BLIS](docs/backend/BLIS.md) | All |
-| [CANN](docs/build.md#cann) | Ascend NPU |
-| [CUDA](docs/build.md#cuda) | Nvidia GPU |
-| [HIP](docs/build.md#hip) | AMD GPU |
-| [Hexagon](docs/backend/snapdragon/README.md) | Snapdragon |
-| [IBM zDNN](docs/backend/zDNN.md) | IBM Z & LinuxONE |
-| [MUSA](docs/build.md#musa) | Moore Threads GPU |
-| [Metal](docs/build.md#metal-build) | Apple Silicon |
-| [OpenCL](docs/backend/OPENCL.md) | Adreno GPU |
-| [OpenVINO [In Progress]](docs/backend/OPENVINO.md) | Intel CPUs, GPUs, and NPUs |
-| [RPC](https://github.com/ggml-org/llama.cpp/tree/master/tools/rpc) | All |
-| [SYCL](docs/backend/SYCL.md) | Intel GPU |
-| [VirtGPU](docs/backend/VirtGPU.md) | VirtGPU APIR |
-| [Vulkan](docs/build.md#vulkan) | GPU |
-| [WebGPU](docs/build.md#webgpu) | All |
-| [ZenDNN](docs/build.md#zendnn) | AMD CPU |
-
-## Documentation
-
-#### Tools
-
-- [cli](tools/cli/README.md)
-- [completion](tools/completion/README.md)
-- [server](tools/server/README.md)
-- [GBNF grammars](grammars/README.md)
-
-#### Development
-
-- [How to build](docs/build.md)
-- [Running on Docker](docs/docker.md)
-- [Build on Android](docs/android.md)
-- [Multi-GPU usage](docs/multi-gpu.md)
-- [Performance troubleshooting](docs/development/token_generation_performance_tips.md)
-- [GGML tips & tricks](https://github.com/ggml-org/llama.cpp/wiki/GGML-Tips-&-Tricks)
-- [XCFramework](docs/xcframework.md)
-- [Completions](docs/completions.md)
-- [Models](docs/models.md)
-- [Release process](docs/release.md)
-
-## Contributing
-
-- Contributors can open PRs
-- Collaborators will be invited based on contributions
-- Maintainers can push to branches in the `llama.cpp` repo and merge PRs into the `master` branch
-- Any help with managing issues, PRs and projects is very appreciated!
-- Read the [CONTRIBUTING.md](CONTRIBUTING.md) for more information
-
-## Acknowledgements
-
-- [yhirose/cpp-httplib](https://github.com/yhirose/cpp-httplib) - Single-header HTTP server, used by `llama-server` - MIT license
-- [nothings/stb](https://github.com/nothings/stb) - Single-header image format decoder, used by multimodal subsystem - Public domain
-- [nlohmann/json](https://github.com/nlohmann/json) - Single-header JSON library, used by various tools/examples - MIT License
-- [mackron/miniaudio](https://github.com/mackron/miniaudio) - Single-header audio format decoder, used by multimodal subsystem - Public domain
-- [sheredom/subprocess.h](https://github.com/sheredom/subprocess.h) - Single-header process launching solution for C and C++ - Public domain
+DenseX 是讓 12 GB 等級顯示卡跑大型稠密模型長上下文的實驗性推論引擎，由 llama.cpp `620d2225` 分出後獨立發展、不追蹤上游。目前在 RTX 3060 12 GB 上，Qwen 3.8 27B 於 120K 上下文可達約 28 tok/s（4K 約 32 tok/s）。功能多為預設關閉的開關，詳見上表與 commit 紀錄。

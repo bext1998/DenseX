@@ -1,5 +1,5 @@
 param(
-    [string]$Model = 'G:/InferenceReaserch/LlamaCppKVMem_Swift27B/models/Swift-1.5-Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf',
+    [Parameter(Mandatory)][string]$Model,
     [int]$Port = 8094,
     [int]$TimeoutSeconds = 300,
     [switch]$RestoreOnly,

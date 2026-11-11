@@ -14,7 +14,7 @@ In practice:
 
 ## Read first
 
-Project rules live outside this repository, in the research workspace that contains it:
+`README.md` (what DenseX is, switches, build). When this checkout sits inside the owner's private research workspace, project rules live there as well:
 - `../../AGENTS.md`: project rules, collaboration and the task queue (`docs/tasks/QUEUE.md`).
 - `../SPEC.md` (section 12: version control), `../NOTES.md` (experiment log), `../MEMORY_AUDIT.md`.
 
@@ -38,6 +38,7 @@ DenseX is frozen at llama.cpp `620d2225` and no longer merges or tracks upstream
 
 ## Build and test
 
-- Build with `../build.ps1` (Windows, CUDA, sm86 by default): `pwsh -File ../build.ps1 -Target llama-server`, add `-Tests` for test targets.
+- Build with `scripts/densex/build.ps1` (Windows, CUDA, sm86 by default): `pwsh -File scripts/densex/build.ps1 -Target llama-server`, add `-Tests` for test targets. In the research workspace use `../build.ps1`, which builds into `../build`.
 - One GPU job at a time on the target machine: check `../bench/GPU_BUSY` and running engines before any GPU work.
+- Before committing a refactor or cleanup, run the regression net `../bench/regress.ps1` (research workspace).
 - Kernel changes: `test-backend-ops` (eval and perf) for the affected ops. Engine changes: compare temperature-0 outputs with the reference path, and measure speed with the scripts in `../bench/`.
