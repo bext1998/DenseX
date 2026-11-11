@@ -1,4 +1,9 @@
-# DenseX
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="media/densex/densex-logo-dark.svg">
+    <img alt="DenseX" src="media/densex/densex-logo-light.svg" width="480">
+  </picture>
+</h1>
 
 State of The Art for Dense Model Inference at Home.
 
