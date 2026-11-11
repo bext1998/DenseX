@@ -49,7 +49,6 @@
 /libllama.so
 /llama-*
 /vulkan-shaders-gen
-/rpc-server
 /out/
 /tmp/
 /autogen-*.md

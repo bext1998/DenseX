@@ -37,7 +37,6 @@
   useRocm ? config.rocmSupport,
   rocmGpuTargets ? builtins.concatStringsSep ";" rocmPackages.clr.gpuTargets,
   useVulkan ? false,
-  useRpc ? false,
   llamaVersion ? "0.0.0", # Arbitrary version, substituted by the flake
 
   # It's necessary to consistently use backendStdenv when building with CUDA support,
@@ -205,7 +204,6 @@ effectiveStdenv.mkDerivation (finalAttrs: {
       (cmakeBool "GGML_METAL" useMetalKit)
       (cmakeBool "GGML_VULKAN" useVulkan)
       (cmakeBool "GGML_STATIC" enableStatic)
-      (cmakeBool "GGML_RPC" useRpc)
     ]
     ++ optionals useCuda [
       (

@@ -66,10 +66,6 @@
 #include "ggml-blas.h"
 #endif
 
-#ifdef GGML_USE_RPC
-#include "ggml-rpc.h"
-#endif
-
 #ifdef GGML_USE_VIRTGPU_FRONTEND
 #include "ggml-virtgpu.h"
 #endif
@@ -158,9 +154,6 @@ struct ggml_backend_registry {
 #endif
 #ifdef GGML_USE_BLAS
         register_backend(ggml_backend_blas_reg());
-#endif
-#ifdef GGML_USE_RPC
-        register_backend(ggml_backend_rpc_reg());
 #endif
 #ifdef GGML_USE_OPENVINO
         register_backend(ggml_backend_openvino_reg());
@@ -581,7 +574,6 @@ void ggml_backend_load_all_from_path(const char * dir_path) {
     ggml_backend_load_best("cuda", silent, dir_path);
     ggml_backend_load_best("hip", silent, dir_path);
     ggml_backend_load_best("metal", silent, dir_path);
-    ggml_backend_load_best("rpc", silent, dir_path);
     ggml_backend_load_best("sycl", silent, dir_path);
     ggml_backend_load_best("vulkan", silent, dir_path);
     ggml_backend_load_best("virtgpu", silent, dir_path);
