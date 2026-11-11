@@ -64,23 +64,6 @@ cmake --build build --config Release -j $(nproc)
     cmake --build build --config Release -j $(nproc)
     ```
 
-## IBM zDNN Accelerator
-
-This provides acceleration using the IBM zAIU co-processor located in the Telum I and Telum II processors. Make sure to have the [IBM zDNN library](https://github.com/IBM/zDNN) installed.
-
-#### Compile from source from IBM
-
-You may find the official build instructions here: [Building and Installing zDNN](https://github.com/IBM/zDNN?tab=readme-ov-file#building-and-installing-zdnn)
-
-### Compilation
-
-```bash
-cmake -S . -B build             \
-    -DCMAKE_BUILD_TYPE=Release  \
-    -DGGML_ZDNN=ON
-cmake --build build --config Release -j$(nproc)
-```
-
 ## Getting GGUF Models
 
 All models need to be converted to Big-Endian. You can achieve this in three cases:
@@ -151,10 +134,6 @@ All models need to be converted to Big-Endian. You can achieve this in three cas
 ### 1. SIMD Acceleration
 
 Only available in IBM z15/LinuxONE 3 or later system with the `-DGGML_VXE=ON` (turned on by default) compile flag. No hardware acceleration is possible with llama.cpp with older systems, such as IBM z14/arch12. In such systems, the APIs can still run but will use a scalar implementation.
-
-### 2. zDNN Accelerator (WIP)
-
-Only available in IBM z17/LinuxONE 5 or later system with the `-DGGML_ZDNN=ON` compile flag. No hardware acceleration is possible with llama.cpp with older systems, such as IBM z15/arch13. In such systems, the APIs will default back to CPU routines.
 
 ### 3. Spyre Accelerator
 
@@ -231,7 +210,6 @@ IBM VXE/VXE2 SIMD acceleration depends on the BLAS implementation. It is strongl
 | IBM z15  | ✅      |                          |
 | IBM z16  | ✅      |                          |
 | IBM z17  | ✅      | GCC 15.1.0               |
-| IBM zDNN | ✅      |                          |
 
 -   ✅ - supported and verified to run as intended
 -   🚫 - unsupported, we are unlikely able to provide support

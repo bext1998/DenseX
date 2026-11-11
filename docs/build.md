@@ -18,12 +18,8 @@ The following sections describe how to build with different backends and options
 * [CUDA](#cuda)
 * [MUSA](#musa)
 * [HIP](#hip)
-* [CANN](#cann)
-* [ZenDNN](#zendnn)
 * [Arm® KleidiAI™](#arm-kleidiai)
 * [Android](#android-1)
-* [OpenVINO](#openvino)
-* [Hexagon](#hexagon)
 * [Notes about GPU-accelerated backends](#notes-about-gpu-accelerated-backends)
 
 ## CPU Build
@@ -114,7 +110,7 @@ Check [BLIS.md](./backend/BLIS.md) for more information.
 
 ### AMD AOCL-BLAS
 
-For AMD CPU inference, the [ZenDNN backend](#zendnn) is recommended. AOCL-BLAS is also available as a vendor option for the generic `GGML_BLAS` backend.
+AOCL-BLAS is available as a vendor option for the generic `GGML_BLAS` backend.
 
 Source `amd-libs.cfg` from your AOCL install (MT tree by default), then build (CMake 3.27+ recommended for the `AOCL` / `AOCL_mt` vendors):
 
@@ -415,64 +411,7 @@ If your GPU is not officially supported you can use the environment variable [`H
 On Linux it is possible to use unified memory architecture (UMA) to share main memory between the CPU and integrated GPU by setting environment variable `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1`. However, this hurts performance for non-integrated GPUs (but enables working with integrated GPUs).
 
 
-## CANN
-This provides NPU acceleration using the AI cores of your Ascend NPU. And [CANN](https://www.hiascend.com/en/software/cann) is a hierarchical APIs to help you to quickly build AI applications and service based on Ascend NPU.
 
-For more information about Ascend NPU in [Ascend Community](https://www.hiascend.com/en/).
-
-Make sure to have the CANN toolkit installed. You can download it from here: [CANN Toolkit](https://www.hiascend.com/developer/download/community/result?module=cann)
-
-Go to `llama.cpp` directory and build using CMake.
-```bash
-cmake -B build -DGGML_CANN=on -DCMAKE_BUILD_TYPE=release
-cmake --build build --config release
-```
-
-You can test with:
-
-```bash
-./build/bin/llama-cli -m PATH_TO_MODEL -p "Building a website can be done in 10 steps:" -ngl 32
-```
-
-If the following info is output on screen, you are using `llama.cpp` with the CANN backend:
-```bash
-llm_load_tensors:       CANN model buffer size = 13313.00 MiB
-llama_new_context_with_model:       CANN compute buffer size =  1260.81 MiB
-```
-
-For detailed info, such as model/device supports, CANN install, please refer to [llama.cpp for CANN](./backend/CANN.md).
-
-## ZenDNN
-
-ZenDNN provides optimized deep learning primitives for AMD EPYC™ CPUs. It accelerates matrix multiplication operations for inference workloads.
-
-### Compilation
-
-- Using `CMake` on Linux (automatic build):
-
-    ```bash
-    cmake -B build -DGGML_ZENDNN=ON
-    cmake --build build --config Release
-    ```
-
-    The first build will automatically download and build ZenDNN, which may take 5-10 minutes. Subsequent builds will be much faster.
-
-- Using `CMake` with custom ZenDNN installation:
-
-    ```bash
-    cmake -B build -DGGML_ZENDNN=ON -DZENDNN_ROOT=/path/to/zendnn/install
-    cmake --build build --config Release
-    ```
-
-### Testing
-
-You can test with:
-
-```bash
-./build/bin/llama-cli -m PATH_TO_MODEL -p "Building a website can be done in 10 steps:" -n 50
-```
-
-For detailed information about hardware support, setup instructions, and performance optimization, refer to [llama.cpp for ZenDNN](./backend/ZenDNN.md).
 
 ## Arm® KleidiAI™
 KleidiAI provides optimized Arm CPU microkernels used by the ggml CPU backend. Enabling it at build time makes those kernels available; it does not force every operation to use KleidiAI. At runtime, llama.cpp selects the best compatible CPU kernel from the detected CPU features, tensor type, operation shape, and active backend priority.
@@ -580,17 +519,6 @@ To read documentation for how to build on Android, [click here](./android.md)
 
 To read documentation for how to build on IBM Z & LinuxONE, [click here](./build-s390x.md)
 
-## OpenVINO
-
-[OpenVINO](https://docs.openvino.ai/) is an open-source toolkit for optimizing and deploying high-performance AI inference, specifically designed for Intel hardware (CPUs, GPUs, and NPUs).
-
-For build instructions and usage examples, refer to [OPENVINO.md](backend/OPENVINO.md).
-
-### Hexagon
-
-Check [README.md](./backend/snapdragon/README.md) for target specific build and run info.
-
----
 ## Notes about GPU-accelerated backends
 
 The GPU may still be used to accelerate some parts of the computation even when using the `-ngl 0` option. You can fully disable GPU acceleration by using `--device none`.

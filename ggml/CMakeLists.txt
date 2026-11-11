@@ -219,18 +219,8 @@ option(GGML_HIP_MMQ_MFMA                    "ggml: enable MFMA MMA for CDNA in M
 option(GGML_HIP_EXPORT_METRICS              "ggml: enable kernel perf metrics output"         OFF)
 option(GGML_MUSA_GRAPHS                     "ggml: use MUSA graph, experimental, unstable"    OFF)
 option(GGML_MUSA_MUDNN_COPY                 "ggml: enable muDNN for accelerated copy"         OFF)
-option(GGML_ZDNN                            "ggml: use zDNN"                                  OFF)
 option(GGML_OPENMP                          "ggml: use OpenMP"                                ON)
 option(GGML_OPENMP_FETCH                    "ggml: fetch LLVM OpenMP"                         OFF)
-
-option(GGML_OPENVINO                        "ggml: use OPENVINO"                              OFF)
-option(GGML_ET                              "ggml: use ET backend"                            OFF)
-option(GGML_ET_SYSEMU                       "ggml: use ET backend via sysemu"                 OFF)
-
-option(GGML_HEXAGON                         "ggml: enable Hexagon backend"                    OFF)
-
-option(GGML_ZENDNN                          "ggml: use ZenDNN"                                OFF)
-option(ZENDNN_ROOT                          "ggml: path to ZenDNN installation"               "")
 
 # extra artifacts
 option(GGML_BUILD_TESTS    "ggml: build tests"    ${GGML_STANDALONE})
@@ -284,12 +274,9 @@ set(GGML_PUBLIC_HEADERS
     include/ggml-alloc.h
     include/ggml-backend.h
     include/ggml-blas.h
-    include/ggml-cann.h
     include/ggml-cpp.h
     include/ggml-cuda.h
     include/ggml-opt.h
-    include/ggml-zendnn.h
-    include/ggml-openvino.h
     include/gguf.h)
 
 set_target_properties(ggml PROPERTIES PUBLIC_HEADER "${GGML_PUBLIC_HEADERS}")

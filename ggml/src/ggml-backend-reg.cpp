@@ -34,32 +34,8 @@
 #include "ggml-cuda.h"
 #endif
 
-#ifdef GGML_USE_ZDNN
-#include "ggml-zdnn.h"
-#endif
-
-#ifdef GGML_USE_HEXAGON
-#include "ggml-hexagon.h"
-#endif
-
 #ifdef GGML_USE_BLAS
 #include "ggml-blas.h"
-#endif
-
-#ifdef GGML_USE_CANN
-#include "ggml-cann.h"
-#endif
-
-#ifdef GGML_USE_ZENDNN
-#include "ggml-zendnn.h"
-#endif
-
-#ifdef GGML_USE_OPENVINO
-#include "ggml-openvino.h"
-#endif
-
-#ifdef GGML_USE_ET
-#include "ggml-et.h"
 #endif
 
 namespace fs = std::filesystem;
@@ -92,26 +68,8 @@ struct ggml_backend_registry {
 #ifdef GGML_USE_CUDA
         register_backend(ggml_backend_cuda_reg());
 #endif
-#ifdef GGML_USE_ZDNN
-        register_backend(ggml_backend_zdnn_reg());
-#endif
-#ifdef GGML_USE_ZENDNN
-        register_backend(ggml_backend_zendnn_reg());
-#endif
-#ifdef GGML_USE_HEXAGON
-        register_backend(ggml_backend_hexagon_reg());
-#endif
-#ifdef GGML_USE_CANN
-        register_backend(ggml_backend_cann_reg());
-#endif
 #ifdef GGML_USE_BLAS
         register_backend(ggml_backend_blas_reg());
-#endif
-#ifdef GGML_USE_OPENVINO
-        register_backend(ggml_backend_openvino_reg());
-#endif
-#ifdef GGML_USE_ET
-        register_backend(ggml_backend_et_reg());
 #endif
 #ifdef GGML_USE_CPU
         register_backend(ggml_backend_cpu_reg());
@@ -521,13 +479,9 @@ void ggml_backend_load_all_from_path(const char * dir_path) {
 #endif
 
     ggml_backend_load_best("blas", silent, dir_path);
-    ggml_backend_load_best("zendnn", silent, dir_path);
-    ggml_backend_load_best("cann", silent, dir_path);
     ggml_backend_load_best("cuda", silent, dir_path);
     ggml_backend_load_best("hip", silent, dir_path);
-    ggml_backend_load_best("hexagon", silent, dir_path);
     ggml_backend_load_best("musa", silent, dir_path);
-    ggml_backend_load_best("openvino", silent, dir_path);
     ggml_backend_load_best("cpu", silent, dir_path);
     // check the environment variable GGML_BACKEND_PATH to load an out-of-tree backend
     const char * backend_path = std::getenv("GGML_BACKEND_PATH");

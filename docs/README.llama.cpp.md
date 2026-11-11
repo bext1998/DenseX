@@ -78,14 +78,9 @@ The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-or
 | --- | --- |
 | [BLAS](docs/build.md#blas-build) | All |
 | [BLIS](docs/backend/BLIS.md) | All |
-| [CANN](docs/build.md#cann) | Ascend NPU |
 | [CUDA](docs/build.md#cuda) | Nvidia GPU |
 | [HIP](docs/build.md#hip) | AMD GPU |
-| [Hexagon](docs/backend/snapdragon/README.md) | Snapdragon |
-| [IBM zDNN](docs/backend/zDNN.md) | IBM Z & LinuxONE |
 | [MUSA](docs/build.md#musa) | Moore Threads GPU |
-| [OpenVINO [In Progress]](docs/backend/OPENVINO.md) | Intel CPUs, GPUs, and NPUs |
-| [ZenDNN](docs/build.md#zendnn) | AMD CPU |
 
 ## Documentation
 
