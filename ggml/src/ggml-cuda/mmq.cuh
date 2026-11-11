@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.cuh"
+#include "densex-env.cuh"
 
 #include <climits>
 #include <cstdint>
@@ -1439,10 +1440,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
     // DenseX: count the block slots of the whole GPU (SMs x resident blocks per SM) instead of the SMs. With 2 resident
     // blocks per SM (e.g. IQ3 at J=16 on sm_86) tiling 136 tiles over 56 slots leaves a 2.43-wave tail, and stream-k
     // over nsm blocks runs one block per SM. Set DENSEX_MMQ_SLOTS=0 for the previous per-SM rule.
-    static const bool use_slots = [] {
-        const char * env = getenv("DENSEX_MMQ_SLOTS");
-        return env == nullptr || atoi(env) != 0;
-    }();
+    const bool use_slots = ggml_cuda_densex_env_get().mmq_slots;
     static int blocks_per_sm = -1; // per template instantiation; the kernel's resources do not change at runtime
     if (blocks_per_sm < 0) {
         int n = 1;

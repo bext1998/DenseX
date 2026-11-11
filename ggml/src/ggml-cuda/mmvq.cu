@@ -1,4 +1,5 @@
 #include "mmvq.cuh"
+#include "densex-env.cuh"
 #include "quantize.cuh"
 #include "unary.cuh"
 #include "vecdotq.cuh"
@@ -320,7 +321,7 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
         return false;
     }
     // DenseX: DENSEX_MMVQ_MAX=<n> forces MMVQ for ne11 <= n on every GPU (A/B and sweeps; 8 = upstream default)
-    static const int densex_mmvq_max = getenv("DENSEX_MMVQ_MAX") ? atoi(getenv("DENSEX_MMVQ_MAX")) : -1;
+    const int densex_mmvq_max = ggml_cuda_densex_env_get().mmvq_max;
     if (densex_mmvq_max >= 0) {
         return ne11 <= densex_mmvq_max;
     }

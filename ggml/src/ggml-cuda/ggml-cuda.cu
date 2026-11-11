@@ -25,6 +25,7 @@
 #include "ggml-cuda/cumsum.cuh"
 #include "ggml-cuda/diagmask.cuh"
 #include "ggml-cuda/diag.cuh"
+#include "ggml-cuda/densex-env.cuh"
 #include "ggml-cuda/fattn.cuh"
 #include "ggml-cuda/fwht.cuh"
 #include "ggml-cuda/getrows.cuh"
@@ -150,6 +151,28 @@ static int ggml_cuda_env_int(const char * name, int default_value) {
 
 static bool ggml_cuda_env_set(const char * name) {
     return getenv(name) != nullptr;
+}
+
+// DenseX: single read point for the DENSEX_* CUDA backend switches (see densex-env.cuh).
+// The values are parsed from the environment once and logged once, on the first call.
+const ggml_cuda_densex_env & ggml_cuda_densex_env_get() {
+    static const ggml_cuda_densex_env env = [] {
+        const char * fa_decode_mma = getenv("DENSEX_FA_DECODE_MMA");
+        const char * mmq_slots     = getenv("DENSEX_MMQ_SLOTS");
+        const char * mmvq_max      = getenv("DENSEX_MMVQ_MAX");
+        const char * graph_verify  = getenv("DENSEX_GRAPH_VERIFY");
+
+        ggml_cuda_densex_env e;
+        e.fa_decode_mma = fa_decode_mma == nullptr || atoi(fa_decode_mma) != 0;
+        e.mmq_slots     = mmq_slots     == nullptr || atoi(mmq_slots)     != 0;
+        e.mmvq_max      = mmvq_max      != nullptr ? atoi(mmvq_max)       : -1;
+        e.graph_verify  = graph_verify  != nullptr && atoi(graph_verify)  != 0;
+
+        GGML_LOG_INFO("densex env: FA_DECODE_MMA=%d MMQ_SLOTS=%d MMVQ_MAX=%d GRAPH_VERIFY=%d\n",
+            (int) e.fa_decode_mma, (int) e.mmq_slots, e.mmvq_max, (int) e.graph_verify);
+        return e;
+    }();
+    return env;
 }
 
 static bool ggml_cuda_unified_memory_enabled() {
@@ -2757,8 +2780,7 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
         }
         GGML_ASSERT((int)graph->node_props.size() == cgraph->n_nodes);
         // DenseX: DENSEX_GRAPH_VERIFY=1 checks that a reused uid really has the captured pointers, shapes and strides
-        static const bool verify = ggml_cuda_env_flag("DENSEX_GRAPH_VERIFY");
-        if (verify) {
+        if (ggml_cuda_densex_env_get().graph_verify) {
             static bool announced = false;
             if (!announced) {
                 announced = true;
