@@ -29,10 +29,6 @@ indent_size = unset
 [examples/llama.swiftui/llama.swiftui.xcodeproj/*]
 indent_style = tab
 
-[tools/cvector-generator/*.txt]
-trim_trailing_whitespace = unset
-insert_final_newline = unset
-
 [models/templates/*.jinja]
 indent_style = unset
 indent_size = unset
