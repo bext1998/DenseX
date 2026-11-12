@@ -11,6 +11,8 @@ struct llama_densex_env {
                                    //                           sequence); =1 -> also the other GDN archs; =0 -> off
     std::string draft_vocab_order; // DENSEX_DRAFT_VOCAB_ORDER: <tsv path>; empty means unset or an empty value
     int64_t     draft_vocab;       // DENSEX_DRAFT_VOCAB:       unset -> 0; otherwise atoll(env)
+    int         kv_vmm;            // DENSEX_KV_VMM:            unset -> 0 (off); =1 -> the offloaded KV cache is
+                                   //                           allocated on persistent CUDA VMM buffers (issue #7)
 };
 
 const llama_densex_env & llama_densex_env_get();

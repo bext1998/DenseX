@@ -4,6 +4,7 @@
 #include "llama-io.h"
 #include "llama-model.h"
 #include "llama-context.h"
+#include "llama-densex-env.h"
 
 #include <algorithm>
 #include <cassert>
@@ -62,6 +63,62 @@ static void ggml_gen_hadamard(ggml_tensor * tensor) {
 // llama_kv_cache
 //
 
+// DenseX (issue #7): the CUDA backend exports a buffer type that allocates persistent VMM buffers - a
+// fixed virtual address with the physical pages mapped explicitly (see
+// ggml_backend_cuda_vmm_buffer_type() in ggml/src/ggml-cuda/ggml-cuda.cu, and issue #12 for why the
+// capacity check there is done up front). It is looked up by name through the device's backend
+// registry. The wrapper buffer type only selects the allocator: the buffers it returns report the plain
+// CUDA buffer type and interface, so nothing else about the KV cache changes.
+static ggml_backend_buffer_type_t llama_kv_cache_vmm_buft(ggml_backend_dev_t dev) {
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+
+    typedef ggml_backend_buffer_type_t (*buft_from_device_fn)(int);
+
+    buft_from_device_fn fn = (buft_from_device_fn) ggml_backend_reg_get_proc_address(
+            reg, "ggml_backend_cuda_vmm_buffer_type");
+
+    static bool warned = false;
+
+    if (fn == nullptr) {
+        if (!warned) {
+            LLAMA_LOG_WARN("%s: DENSEX_KV_VMM=1 but device '%s' does not provide a VMM buffer type"
+                    " (not a CUDA device, or VMM support is disabled) - using the default buffer type\n",
+                    __func__, ggml_backend_dev_name(dev));
+            warned = true;
+        }
+        return nullptr;
+    }
+
+    int index = -1;
+    for (size_t i = 0; i < ggml_backend_reg_dev_count(reg); i++) {
+        if (ggml_backend_reg_dev_get(reg, i) == dev) {
+            index = (int) i;
+            break;
+        }
+    }
+
+    if (index < 0) {
+        if (!warned) {
+            LLAMA_LOG_WARN("%s: DENSEX_KV_VMM=1 but device '%s' is not indexed in its backend registry"
+                    " - using the default buffer type\n", __func__, ggml_backend_dev_name(dev));
+            warned = true;
+        }
+        return nullptr;
+    }
+
+    ggml_backend_buffer_type_t buft = fn(index);
+    if (buft == nullptr) {
+        if (!warned) {
+            LLAMA_LOG_WARN("%s: DENSEX_KV_VMM=1 but the CUDA VMM buffer type is not available for device %d"
+                    " - using the default buffer type\n", __func__, index);
+            warned = true;
+        }
+        return nullptr;
+    }
+
+    return buft;
+}
+
 llama_kv_cache::llama_kv_cache(
         const llama_model & model,
         const llama_hparams & hparams,
@@ -112,6 +169,9 @@ llama_kv_cache::llama_kv_cache(
         }
     };
     std::map<ggml_backend_buffer_type_t, ggml_context_ptr, ggml_backend_buft_comparator> ctx_map;
+
+    // DenseX (issue #7): devices whose VMM buffer type choice has already been reported for this cache
+    std::vector<ggml_backend_dev_t> vmm_buft_logged;
 
     // create a context for each buffer type
     auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
@@ -220,6 +280,21 @@ llama_kv_cache::llama_kv_cache(
         if (offload) {
             auto * dev = model.dev_layer(il);
             buft = ggml_backend_dev_buffer_type(dev);
+
+            if (llama_densex_env_get().kv_vmm) {
+                const ggml_backend_buffer_type_t buft_vmm = llama_kv_cache_vmm_buft(dev);
+                if (buft_vmm != nullptr) {
+                    buft = buft_vmm;
+
+                    // logged once per cache instance and device, so that the log shows which buffer
+                    // type the main model's KV and the draft's KV each ended up with
+                    if (std::find(vmm_buft_logged.begin(), vmm_buft_logged.end(), dev) == vmm_buft_logged.end()) {
+                        vmm_buft_logged.push_back(dev);
+                        LLAMA_LOG_INFO("%s: DENSEX_KV_VMM=1: KV of device '%s' uses buffer type '%s'\n",
+                                __func__, ggml_backend_dev_name(dev), ggml_backend_buft_name(buft));
+                    }
+                }
+            }
 
             dev_name = ggml_backend_dev_name(dev);
         }
