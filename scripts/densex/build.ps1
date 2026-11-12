@@ -8,6 +8,19 @@
 param([string]$Target = 'llama-server', [string]$Arch = '86', [int]$Jobs = 6, [string]$Name = '', [switch]$Concurrent, [switch]$Tests,
       [string]$CudaPath = 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0', [string]$Src = '', [string]$BuildRoot = '')
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 turns a native tool's stderr into a terminating error while $ErrorActionPreference is 'Stop'
+# and the output is redirected with *>>. A fresh cmake configure writes warnings to stderr ("Manually-specified
+# variables were not used by the project") and the 5.1 run died with "ERROR: CMAKE_BUILD_TYPE=Release" before the build
+# started, although cmake exited 0 (issue #26). Native tools therefore run with 'Continue' and only their exit code
+# decides success; their output still lands in the log.
+function Invoke-Native([string]$label, [scriptblock]$run) {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $out = @(& $run) } finally { $ErrorActionPreference = $prev }
+    $rc = $LASTEXITCODE
+    if ($rc -ne 0) { throw "$label failed (exit $rc)" }
+    return $out
+}
 $src = if ($Src) { $Src } else { (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path }
 # A checkout inside the research workspace (a build.ps1 wrapper next to it) builds into the workspace's build root only;
 # building here by default left a stray <repo>/build tree that later runs picked up by mistake.
@@ -36,21 +49,26 @@ try {
         '-DLLAMA_BUILD_SERVER=ON', '-DLLAMA_BUILD_COMMON=ON', '-DLLAMA_BUILD_TOOLS=ON',
         $(if ($Tests) { '-DLLAMA_BUILD_TESTS=ON' } else { '-DLLAMA_BUILD_TESTS=OFF' }), '-DLLAMA_BUILD_EXAMPLES=OFF', '-DLLAMA_BUILD_APP=OFF')
     Log "configure"
-    cmake @configure *>> $log
-    if ($LASTEXITCODE) { throw 'configure failed' }
+    Invoke-Native 'configure' { cmake @configure *>> $log } | Out-Null
     # Objects whose header deps ninja did not record (cl's localized /showIncludes prefix does not always match, e.g.
     # when built from a UTF-8 console) are not rebuilt after a header change, which mixed old and new llama_model
     # layouts on 2026-11-11 ("bad array new length" at load). Delete them so they are always rebuilt.
-    $stale = @(ninja -C $build -t deps | Select-String '^(\S+\.obj): #deps 0,' | ForEach-Object { $_.Matches[0].Groups[1].Value } |
+    $deps = Invoke-Native 'ninja -t deps' { ninja -C $build -t deps 2>> $log }
+    $stale = @($deps | Select-String '^(\S+\.obj): #deps 0,' | ForEach-Object { $_.Matches[0].Groups[1].Value } |
                Where-Object { $_ -notmatch 'ggml-cuda' })
     foreach ($o in $stale) { Remove-Item -LiteralPath (Join-Path $build $o) -ErrorAction SilentlyContinue }
     Log "objects without recorded header deps, rebuilt: $($stale.Count)"
     Log "build target=$Target jobs=$Jobs"
-    cmake --build $build --parallel $Jobs --target $Target *>> $log
-    if ($LASTEXITCODE) { throw 'build failed' }
+    Invoke-Native 'build' { cmake --build $build --parallel $Jobs --target $Target *>> $log } | Out-Null
     # BUILD_INFO.txt: what source each exe came from (read by bench/common.ps1 Write-Provenance)
-    $diff = (git -C $src diff HEAD) -join "`n"
-    $diffHash = if ($diff) { [BitConverter]::ToString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($diff))).Replace('-', '').Substring(0, 16) } else { 'clean' }
+    $diff = (Invoke-Native 'git diff' { git -C $src diff HEAD 2>> $log }) -join "`n"
+    # SHA256::HashData is .NET 5+; PowerShell 5.1 runs on .NET Framework, so hash through the instance API. Both
+    # produce the same digest, which keeps BUILD_INFO.txt's diff= comparable with earlier records (issue #26).
+    $diffHash = if ($diff) {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $digest = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($diff)) } finally { $sha.Dispose() }
+        [BitConverter]::ToString($digest).Replace('-', '').Substring(0, 16)
+    } else { 'clean' }
     $info = Join-Path $build 'BUILD_INFO.txt'
     $exe = Join-Path $build "bin/$Target.exe"
     $line = "$(Get-Date -Format s) target=$Target commit=$(git -C $src rev-parse --short HEAD) diff=$diffHash exe_sha256=$((Get-FileHash $exe).Hash.Substring(0, 16)) src=$src"
