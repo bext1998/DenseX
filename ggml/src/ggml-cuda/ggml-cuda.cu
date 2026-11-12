@@ -1071,11 +1071,6 @@ ggml_backend_buffer_type_t ggml_backend_cuda_buffer_type(int device) {
 // rolled back and reported through the return value instead of aborting: this path never uses CU_CHECK.
 //
 
-// kept out of reach of the capacity check, so that a VMM buffer cannot starve the driver, the
-// context, or the plain allocations that follow it (issue #12: ~123 MiB of the 12287 MiB is not
-// reachable through VMM on this machine even when nothing else is allocated)
-static const size_t GGML_CUDA_VMM_SAFETY_MARGIN = 1ull << 28; // 256 MB
-
 #if defined(GGML_USE_VMM)
 
 static const char * ggml_cuda_vmm_errstr(CUresult err) {
@@ -1129,12 +1124,14 @@ static CUdeviceptr ggml_cuda_vmm_alloc(int device, size_t size, size_t * mapped_
         return 0;
     }
 
-    if (map_size + GGML_CUDA_VMM_SAFETY_MARGIN > vram_free) {
-        GGML_LOG_ERROR("%s: refusing to allocate %.2f MiB (mapped as %.2f MiB) on device %d: %.2f MiB of "
-                "%.2f MiB free, %.2f MiB kept as a safety margin\n", __func__,
+    // issue #12: under WDDM cuMemCreate/cuMemMap succeed at any size and the physical pages are only committed by
+    // cuMemSetAccess, which succeeds exactly when the mapping fits in the free VRAM (there is no spill into system
+    // memory, unlike cudaMalloc). So the free VRAM is the limit; check it up front instead of trusting cuMemCreate.
+    if (map_size > vram_free) {
+        GGML_LOG_ERROR("%s: refusing to allocate %.2f MiB (mapped as %.2f MiB) on device %d: only %.2f MiB of "
+                "%.2f MiB free\n", __func__,
                 size / 1024.0 / 1024.0, map_size / 1024.0 / 1024.0, device,
-                vram_free / 1024.0 / 1024.0, vram_total / 1024.0 / 1024.0,
-                GGML_CUDA_VMM_SAFETY_MARGIN / 1024.0 / 1024.0);
+                vram_free / 1024.0 / 1024.0, vram_total / 1024.0 / 1024.0);
         return 0;
     }
 
