@@ -741,6 +741,12 @@ static bool moe_implemented(const llm_arch arch) {
 }
 
 static bool arch_supported(const llm_arch arch) {
+    // DenseX only runs qwen35-family models (issue #10): generate and test exactly the arches
+    // the factory still builds. dflash/eagle3 have no dummy fixture (save_models skips them
+    // anyway), so the supported set here is qwen35 + qwen35moe.
+    if (arch != LLM_ARCH_QWEN35 && arch != LLM_ARCH_QWEN35MOE) {
+        return false;
+    }
     if (arch == LLM_ARCH_CLIP || arch == LLM_ARCH_GPTJ || arch == LLM_ARCH_UNKNOWN) {
         return false; // These models don't have usable implementations.
     }
@@ -817,6 +823,8 @@ static int save_models(const std::string & arch_filter, const size_t seed, const
         }
     }, &ud);
 
+    int n_saved = 0; // issue #10: fail below when nothing was really generated
+
     for (const llm_arch & arch : llm_arch_all()) {
         if (arch == LLM_ARCH_UNKNOWN) {
             continue;
@@ -846,9 +854,15 @@ static int save_models(const std::string & arch_filter, const size_t seed, const
             const std::string path = dir + "/" + llm_arch_name(arch) + (moe ? "-moe.gguf" : "-dense.gguf");
             LOG_INF("%s: Saving %s model (%s) to %s...\n", __func__, llm_arch_name(arch), moe ? "MoE" : "dense", path.c_str());
             llama_model_save_to_file(model_and_ctx.first.get(), path.c_str());
+            n_saved++;
         }
     }
     llama_log_set(ud.log_old.callback, ud.log_old.user_data);
+    if (n_saved == 0) {
+        // issue #10: an all-skipped run (e.g. -a <unsupported arch>) must not report success
+        LOG_ERR("%s: no supported architecture was generated (arch filter '%s')\n", __func__, arch_filter.c_str());
+        return 1;
+    }
     return 0;
 }
 
@@ -1117,6 +1131,7 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
 
     if (n_tests == 0) {
         LOG("Summary: no tests executed\n");
+        all_ok = false; // issue #10: an all-skipped run must not report success
     } else if (n_failed == 0) {
         LOG("Summary: all %zu test(s) passed\n", n_tests);
     } else {
