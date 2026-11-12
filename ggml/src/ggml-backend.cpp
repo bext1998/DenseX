@@ -1899,6 +1899,18 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
 // returns false if the slots cannot be allocated (prefetch is then off for this graph)
 static char ggml_backend_sched_prefetch_placeholder;
 
+// DenseX: print what the prefetch plan put into each slot [GGML_SCHED_PREFETCH_DUMP]
+// Off by default, so nothing is printed and the normal output is unchanged. Only the offset inside the slot is
+// printed, never the address: the same plan always prints the same lines, which is what the #6 A/B compares.
+// GGML_LOG_INFO is below llama.cpp's default verbosity - the host application has to raise it (llama-server: -lv 4).
+static bool ggml_backend_sched_prefetch_dump_enabled(void) {
+    static const int dump = []() {
+        const char * v = getenv("GGML_SCHED_PREFETCH_DUMP");
+        return v ? atoi(v) : 0;
+    }();
+    return dump != 0;
+}
+
 static bool ggml_backend_sched_prefetch_plan(ggml_backend_sched_t sched, bool alloc) {
     sched->n_prefetch = 0;
     sched->prefetch_need_size = 0;
@@ -2055,19 +2067,43 @@ static bool ggml_backend_sched_prefetch_plan(ggml_backend_sched_t sched, bool al
             sched->prefetch_slots, max_size / 1024.0 / 1024.0, ggml_backend_name(sched->backends[pb]), sched->n_prefetch);
     }
 
+    const bool dump = ggml_backend_sched_prefetch_dump_enabled();
+    size_t h2d_bytes = 0;
+    size_t h2d_inputs = 0;
+
+    if (dump) {
+        GGML_LOG_INFO("prefetch_dump: slots=%d slot_bytes=%zu align=%zu n_prefetch=%d\n",
+                sched->prefetch_slots, sched->prefetch_buf_size, align, sched->n_prefetch);
+    }
+
     for (int k = 0; k < sched->n_prefetch; k++) {
         const int i = sched->prefetch_split_ids[k];
         struct ggml_backend_sched_split * split = &sched->splits[i];
         ggml_backend_buffer_t buf = sched->prefetch_bufs[k % sched->prefetch_slots];
-        char * addr = (char *) ggml_backend_buffer_get_base(buf);
+        char * base = (char *) ggml_backend_buffer_get_base(buf);
+        char * addr = base;
+        if (dump) {
+            GGML_LOG_INFO("prefetch_dump: k=%d split=%d slot=%d backend=%d\n",
+                    k, i, k % sched->prefetch_slots, split->backend_id);
+        }
         for (int j = 0; j < split->n_inputs; j++) {
             ggml_tensor * input = split->inputs[j];
             if (eligible(split, i, input)) { // same set as split_size[i], which passed the size limit
                 enum ggml_status st = ggml_backend_tensor_alloc(buf, tensor_copy(input, split->backend_id, sched->cur_copy), addr);
                 GGML_ASSERT(st == GGML_STATUS_SUCCESS);
+                if (dump) {
+                    GGML_LOG_INFO("prefetch_dump:   input=%s type=%s nbytes=%zu off=%zu\n",
+                            input->name, ggml_type_name(input->type), ggml_nbytes(input), (size_t) (addr - base));
+                    h2d_bytes += ggml_nbytes(input);
+                    h2d_inputs++;
+                }
                 addr += GGML_PAD(ggml_nbytes(input), align);
             }
         }
+    }
+
+    if (dump) {
+        GGML_LOG_INFO("prefetch_dump: total h2d_bytes=%zu inputs=%zu\n", h2d_bytes, h2d_inputs);
     }
     return true;
 }
