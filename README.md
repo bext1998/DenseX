@@ -7,11 +7,20 @@
 
 State of The Art for Dense Model Inference at Home.
 
-DenseX is an experimental inference engine for running large **dense** models on low-VRAM consumer GPUs at long context. The first target is Qwen 3.8 27B (GSQ-RCO IQ3_XXS GGUF with MTP head) on a single **RTX 3060 12 GB**.
+DenseX is an experimental inference engine for running large **dense** models on low-VRAM consumer GPUs at long context. Its primary model scope is the full Qwen 3.8 27B **GSQ-RCO** range, including ISTA-DASLab's original tiers and GSQ-RCO variants such as Swift 1.5. **Unsloth Dynamic v3.1**, across its full tier range, is the second series added in [#24](https://github.com/bext1998/DenseX/issues/24).
+
+The results below use **Swift 1.5 IQ3_XXS-mtp on an RTX 3060 12 GB** as the measured sample. Other tiers and VRAM-based presets are **not yet measured**; validation is tracked in issues [#24](https://github.com/bext1998/DenseX/issues/24) and [#28](https://github.com/bext1998/DenseX/issues/28). See [model selection](docs/densex/INSTALL.md#2-obtain-the-model) before changing files.
 
 DenseX started from [llama.cpp](https://github.com/ggml-org/llama.cpp) commit `620d2225` and is now an independent project: it does not track or merge upstream.
 
 > **Status: research / experimental.** Tested only on Windows 11 + RTX 3060 12 GB + Ryzen 5 3600X (32 GB RAM). Most DenseX features are opt-in switches, off by default. The code base is being cleaned up (unused backends and model architectures will be removed).
+
+## Guides
+
+- [Install and verify](docs/densex/INSTALL.md): toolchain, model download and SHA256, first launch.
+- [Usage and troubleshooting](docs/densex/USAGE.md): short/128K settings, switches, memory and speed problems.
+- [Quality results](docs/densex/QUALITY.md): the 18-question 120K evaluation and its limits.
+- [AI agent setup](docs/densex/AI_SETUP.md): executable steps, success checks, and setup boundaries.
 
 ## Results (RTX 3060 12 GB, measured)
 
@@ -75,3 +84,5 @@ Design references (ideas studied, re-implemented in DenseX's own way): Mirai S s
 ## 繁體中文摘要
 
 DenseX 是讓 12 GB 等級顯示卡跑大型稠密模型長上下文的實驗性推論引擎，由 llama.cpp `620d2225` 分出後獨立發展、不追蹤上游。目前在 RTX 3060 12 GB 上，Qwen 3.8 27B 於 120K 上下文可達約 28 tok/s（4K 約 32 tok/s）。功能多為預設關閉的開關，詳見上表與 commit 紀錄。
+
+主要支援 Qwen 3.8 27B 的 GSQ-RCO 全系列，Unsloth Dynamic v3.1 是後來加入的第二系列；Swift 1.5 是目前實測樣本，其他檔位與顯存配置仍待量測。首次使用請依[安裝文件](docs/densex/INSTALL.md)建置、下載並驗證模型，再測短請求；長文設定與記憶體問題見[使用說明](docs/densex/USAGE.md)，實際品質分數與限制見[品質報告](docs/densex/QUALITY.md)。要請 AI agent 協助安裝，請提供 [AI_SETUP](docs/densex/AI_SETUP.md)。
