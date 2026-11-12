@@ -1001,6 +1001,8 @@ struct ggml_backend_sched {
     int prefetch_backend_id;           // the split backend that owns the slots
     ggml_backend_t prefetch_backend;   // copy backend on the same device
     ggml_backend_buffer_t prefetch_bufs[GGML_SCHED_MAX_PREFETCH_SLOTS];
+    // DenseX (#6): the memory of those slots belongs to this provider, not to the scheduler
+    struct ggml_backend_sched_prefetch_provider prefetch_provider;
     size_t prefetch_buf_size;          // allocated size of each slot
     size_t prefetch_need_size;         // slot size required by the last planned graph
     bool prefetch_warned_pageable;
@@ -1899,6 +1901,27 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
 // returns false if the slots cannot be allocated (prefetch is then off for this graph)
 static char ggml_backend_sched_prefetch_placeholder;
 
+// DenseX (#6): the built-in provider, which is exactly what the scheduler used to do itself. Hosts that inject their
+// own (llama_context) replace this hook; a provider has to outlive the scheduler, see the header.
+static ggml_backend_buffer_t ggml_backend_sched_prefetch_alloc_default(
+        void * user_data, ggml_backend_buffer_type_t buft, int slot, size_t size) {
+    GGML_UNUSED(user_data);
+    GGML_UNUSED(slot);
+    return ggml_backend_buft_alloc_buffer(buft, size);
+}
+
+static void ggml_backend_sched_prefetch_free_default(void * user_data, int slot, ggml_backend_buffer_t buf) {
+    GGML_UNUSED(user_data);
+    GGML_UNUSED(slot);
+    ggml_backend_buffer_free(buf);
+}
+
+static const struct ggml_backend_sched_prefetch_provider ggml_backend_sched_prefetch_provider_default = {
+    NULL,
+    ggml_backend_sched_prefetch_alloc_default,
+    ggml_backend_sched_prefetch_free_default,
+};
+
 // DenseX: print what the prefetch plan put into each slot [GGML_SCHED_PREFETCH_DUMP]
 // Off by default, so nothing is printed and the normal output is unchanged. Only the offset inside the slot is
 // printed, never the address: the same plan always prints the same lines, which is what the #6 A/B compares.
@@ -2040,17 +2063,17 @@ static bool ggml_backend_sched_prefetch_plan(ggml_backend_sched_t sched, bool al
         ggml_backend_synchronize(sched->prefetch_backend);
         ggml_backend_synchronize(sched->backends[pb]);
         for (int s = 0; s < sched->prefetch_slots; s++) {
-            ggml_backend_buffer_free(sched->prefetch_bufs[s]);
+            sched->prefetch_provider.free(sched->prefetch_provider.user_data, s, sched->prefetch_bufs[s]);
             sched->prefetch_bufs[s] = NULL;
         }
         sched->prefetch_buf_size = 0;
         for (int s = 0; s < sched->prefetch_slots; s++) {
-            sched->prefetch_bufs[s] = ggml_backend_buft_alloc_buffer(buft, max_size);
+            sched->prefetch_bufs[s] = sched->prefetch_provider.alloc(sched->prefetch_provider.user_data, buft, s, max_size);
             if (sched->prefetch_bufs[s] == NULL) {
                 GGML_LOG_ERROR("%s: failed to allocate prefetch slot %d of %.2f MiB on %s, lower GGML_SCHED_PREFETCH\n", __func__,
                     s, max_size / 1024.0 / 1024.0, ggml_backend_name(sched->backends[pb]));
                 for (int t = 0; t < s; t++) {
-                    ggml_backend_buffer_free(sched->prefetch_bufs[t]);
+                    sched->prefetch_provider.free(sched->prefetch_provider.user_data, t, sched->prefetch_bufs[t]);
                     sched->prefetch_bufs[t] = NULL;
                 }
                 for (int k = 0; k < sched->n_prefetch; k++) {
@@ -2315,6 +2338,9 @@ ggml_backend_sched_t ggml_backend_sched_new(
     const char * GGML_SCHED_PREFETCH = getenv("GGML_SCHED_PREFETCH");
     sched->prefetch_slots = GGML_SCHED_PREFETCH ? std::min(atoi(GGML_SCHED_PREFETCH), GGML_SCHED_MAX_PREFETCH_SLOTS) : 0;
     sched->prefetch_backend_id = -1;
+    // the default is what the scheduler did before a host injected a provider; set eagerly so that a host that never
+    // calls ggml_backend_sched_set_prefetch_provider still gets memory for its slots
+    sched->prefetch_provider = ggml_backend_sched_prefetch_provider_default;
     if (sched->prefetch_slots > 0 && sched->n_copies == 1) {
         for (int b = 0; b < n_backends; b++) {
             ggml_backend_dev_t dev = ggml_backend_get_device(backends[b]);
@@ -2365,7 +2391,7 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
     if (sched->prefetch_backend != NULL) {
         ggml_backend_synchronize(sched->prefetch_backend);
         for (int s = 0; s < sched->prefetch_slots; s++) {
-            ggml_backend_buffer_free(sched->prefetch_bufs[s]);
+            sched->prefetch_provider.free(sched->prefetch_provider.user_data, s, sched->prefetch_bufs[s]);
             ggml_backend_event_free(sched->prefetch_copied[s]);
             ggml_backend_event_free(sched->prefetch_consumed[s]);
         }
@@ -2564,6 +2590,18 @@ size_t ggml_backend_sched_get_prefetch_buffer_size(ggml_backend_sched_t sched, g
         return 0;
     }
     return sched->prefetch_slots * std::max(sched->prefetch_buf_size, sched->prefetch_need_size);
+}
+
+// DenseX (#6): hand the memory of the prefetch slots to the host. Every alloc and free of a slot goes through the
+// provider; the plan, the offsets inside a slot, the copies, the events and the synchronization stay here.
+// Call it before the first graph is planned: a plan that already placed copies in slots would keep addresses into
+// buffers owned by the previous provider.
+void ggml_backend_sched_set_prefetch_provider(ggml_backend_sched_t sched, const struct ggml_backend_sched_prefetch_provider * provider) {
+    GGML_ASSERT(sched);
+    for (int s = 0; s < GGML_SCHED_MAX_PREFETCH_SLOTS; s++) {
+        GGML_ASSERT(sched->prefetch_bufs[s] == NULL);
+    }
+    sched->prefetch_provider = provider ? *provider : ggml_backend_sched_prefetch_provider_default;
 }
 
 void ggml_backend_sched_set_tensor_backend(ggml_backend_sched_t sched, struct ggml_tensor * node, ggml_backend_t backend) {

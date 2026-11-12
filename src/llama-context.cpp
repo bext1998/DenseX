@@ -711,9 +711,35 @@ static int llama_graph_n_input_tensors(ggml_cgraph * gf) {
     return (int) users.size();
 }
 
+// DenseX (#6): the prefetch slots of GGML_SCHED_PREFETCH are allocated through this provider instead of by the
+// scheduler itself. It does exactly what the scheduler's built-in one did - ggml_backend_buft_alloc_buffer and
+// ggml_backend_buffer_free - so nothing about the prefetch changes: the scheduler still decides which splits are
+// prefetched, which slot each lands in, the offsets inside a slot (aligned by ggml_backend_buft_get_alignment), the
+// copies and the events, it sets the buffer usage, and it only calls free after synchronizing the readers and writers.
+// This is the hook E3 will replace (resident weights, shared arena); ggml_backend_sched_get_prefetch_buffer_size is
+// unchanged, so ggml-alloc and the memory report still count the slots the same way.
+ggml_backend_buffer_t llama_context::prefetch_slot_alloc(
+        void * user_data, ggml_backend_buffer_type_t buft, int slot, size_t size) {
+    GGML_UNUSED(user_data);
+    GGML_UNUSED(slot);
+
+    return ggml_backend_buft_alloc_buffer(buft, size);
+}
+
+void llama_context::prefetch_slot_free(void * user_data, int slot, ggml_backend_buffer_t buf) {
+    GGML_UNUSED(user_data);
+    GGML_UNUSED(slot);
+
+    ggml_backend_buffer_free(buf);
+}
+
 void llama_context::sched_new(size_t max_nodes, bool parallel) {
     sched.reset(ggml_backend_sched_new(
             backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, parallel, cparams.op_offload));
+
+    // DenseX (#6): a fresh scheduler has no slots yet, so injecting the provider here is allowed; it has to be in
+    // place before the first graph is planned, because the plan is what allocates the slots
+    ggml_backend_sched_set_prefetch_provider(sched.get(), &prefetch_provider);
 
     ggml_backend_sched_set_copy_callback(sched.get(), sched_copy_experts, this);
     ggml_backend_sched_set_realloc_callback(sched.get(), sched_graph_realloc, this);

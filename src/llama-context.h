@@ -282,6 +282,11 @@ private:
     // ggml_backend_sched realloc callback, counts and traces the graph reallocations of this context
     static void sched_graph_realloc(ggml_backend_sched_t sched, ggml_cgraph * gf, bool backend_ids_changed, bool graph_size_changed, void * user_data);
 
+    // DenseX (#6): ggml_backend_sched prefetch slot provider - the memory of the GGML_SCHED_PREFETCH slots is owned
+    // by this context, not by the scheduler; see prefetch_provider below
+    static ggml_backend_buffer_t prefetch_slot_alloc(void * user_data, ggml_backend_buffer_type_t buft, int slot, size_t size);
+    static void prefetch_slot_free(void * user_data, int slot, ggml_backend_buffer_t buf);
+
     // disable auto fused ops (Flash Attention, Gated Delta Net) whose op lands on a device
     // that differs from the layer it belongs to (usually due to missing backend support)
     void resolve_fused_ops(const llama_memory_context_i * mctx, uint32_t n_seqs);
@@ -363,6 +368,15 @@ private:
     };
 
     std::vector<swap_info> output_swaps;
+
+    // DenseX (#6): declared before sched on purpose - members are destroyed in the reverse order, and the scheduler
+    // releases the prefetch slots in its own destructor, so this provider has to outlive sched. It is stateless now;
+    // when E3 gives it an arena, that object has to be a member declared here too, not inside sched.
+    ggml_backend_sched_prefetch_provider prefetch_provider = {
+        /* .user_data = */ nullptr,
+        /* .alloc     = */ prefetch_slot_alloc,
+        /* .free      = */ prefetch_slot_free,
+    };
 
     ggml_backend_sched_ptr sched;
 

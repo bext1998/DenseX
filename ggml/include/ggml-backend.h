@@ -354,6 +354,28 @@ extern "C" {
     // DenseX: device memory used (or, after a no-alloc reserve, needed) by the host weight prefetch slots of this backend
     GGML_API size_t                     ggml_backend_sched_get_prefetch_buffer_size(ggml_backend_sched_t sched, ggml_backend_t backend);
 
+    // DenseX (#6): who owns the device memory of the host weight prefetch slots [GGML_SCHED_PREFETCH]
+    // The scheduler keeps the planning: which splits are prefetched, which slot a split lands in, the offsets of the
+    // copies inside a slot (from ggml_backend_buft_get_alignment(buft)), the copies and the slot events. It also sets
+    // ggml_backend_buffer_set_usage(COMPUTE). The provider only supplies the memory:
+    //   - alloc gets buft = the buffer type of the prefetch backend and size = the bytes one slot needs in the current
+    //     plan (the same size for every slot); NULL means out of memory and drops prefetch for this graph. Planning
+    //     (the no-alloc reserve) never calls it.
+    //   - free runs when the scheduler is finished with a slot - bigger slots, a failed allocation, or the scheduler
+    //     is destroyed - after the scheduler synchronized every backend that could read or write it; it also has to
+    //     tolerate a NULL buffer. The scheduler never frees slot memory itself.
+    // NULL restores the built-in default: ggml_backend_buft_alloc_buffer / ggml_backend_buffer_free.
+    struct ggml_backend_sched_prefetch_provider {
+        void * user_data;
+        // allocate slot `slot` (0..n_slots-1) of `size` bytes on buft; NULL on failure. The sched sets the buffer usage,
+        // places the copies at offsets it computes from ggml_backend_buft_get_alignment(buft), and never frees it.
+        ggml_backend_buffer_t (*alloc)(void * user_data, ggml_backend_buffer_type_t buft, int slot, size_t size);
+        // release a buffer returned by alloc; the sched has synchronized every reader and writer of it before calling
+        void (*free)(void * user_data, int slot, ggml_backend_buffer_t buf);
+    };
+    // must be called before the first graph is planned; the provider must outlive the sched (or the next call)
+    GGML_API void ggml_backend_sched_set_prefetch_provider(ggml_backend_sched_t sched, const struct ggml_backend_sched_prefetch_provider * provider);
+
     GGML_API void                 ggml_backend_sched_set_tensor_backend(ggml_backend_sched_t sched, struct ggml_tensor * node, ggml_backend_t backend);
     GGML_API ggml_backend_t       ggml_backend_sched_get_tensor_backend(ggml_backend_sched_t sched, struct ggml_tensor * node);
 
