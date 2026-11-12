@@ -871,6 +871,16 @@ struct ggml_backend_cuda_buffer_context {
     size_t va_size     = 0;
     size_t mapped_size = 0;
 
+    // DenseX (issue #8): a lazily mapped VMM buffer - the address space is reserved at allocation and
+    // the physical pages are committed on demand by vmm_ensure_mapped(). vmm_pages has one entry per
+    // granularity-sized page of the reserved range, set to 1 once that page is backed. dev_ptr never
+    // changes, so tensors, views and CUDA graphs built on this buffer stay valid however much of it
+    // is mapped; an unmapped page is only guaranteed to read as zero, touching it faults (issue #12:
+    // an out-of-range read stops the GPU and poisons the context).
+    bool                 vmm_lazy        = false;
+    size_t               vmm_granularity = 0;
+    std::vector<uint8_t> vmm_pages;
+
     ggml_backend_cuda_buffer_context(int device, void * dev_ptr) :
         device(device), dev_ptr(dev_ptr),
         name(GGML_CUDA_NAME + std::to_string(device)) {
@@ -881,12 +891,38 @@ struct ggml_backend_cuda_buffer_context {
 #if defined(GGML_USE_VMM)
             ggml_cuda_set_device(device);
 
-            // unmap only the part that was mapped, then release the reserved range - see the note on
-            // ggml_backend_cuda_vmm_buffer_type_alloc_buffer()
-            if (cuMemUnmap((CUdeviceptr) dev_ptr, mapped_size) != CUDA_SUCCESS) {
-                GGML_LOG_ERROR("%s: device %d: cuMemUnmap(0x%llx, %zu) failed\n", __func__, device,
-                        (unsigned long long) dev_ptr, mapped_size);
+            if (!vmm_lazy) {
+                // unmap only the part that was mapped, then release the reserved range - see the note on
+                // ggml_backend_cuda_vmm_buffer_type_alloc_buffer()
+                if (cuMemUnmap((CUdeviceptr) dev_ptr, mapped_size) != CUDA_SUCCESS) {
+                    GGML_LOG_ERROR("%s: device %d: cuMemUnmap(0x%llx, %zu) failed\n", __func__, device,
+                            (unsigned long long) dev_ptr, mapped_size);
+                }
+            } else {
+                // issue #8: the mapped pages are not one contiguous range - unmap every run of mapped
+                // pages separately, then release the whole reserved range
+                size_t p = 0;
+                while (p < vmm_pages.size()) {
+                    if (!vmm_pages[p]) {
+                        ++p;
+                        continue;
+                    }
+
+                    size_t q = p;
+                    while (q < vmm_pages.size() && vmm_pages[q]) {
+                        ++q;
+                    }
+
+                    const size_t run = (q - p) * vmm_granularity;
+                    if (cuMemUnmap((CUdeviceptr) ((char *) dev_ptr + p*vmm_granularity), run) != CUDA_SUCCESS) {
+                        GGML_LOG_ERROR("%s: device %d: cuMemUnmap(0x%llx, %.2f MiB) failed\n", __func__, device,
+                                (unsigned long long) ((char *) dev_ptr + p*vmm_granularity), run / 1024.0 / 1024.0);
+                    }
+
+                    p = q;
+                }
             }
+
             if (cuMemAddressFree((CUdeviceptr) dev_ptr, va_size) != CUDA_SUCCESS) {
                 GGML_LOG_ERROR("%s: device %d: cuMemAddressFree(0x%llx, %zu) failed\n", __func__, device,
                         (unsigned long long) dev_ptr, va_size);
@@ -900,6 +936,208 @@ struct ggml_backend_cuda_buffer_context {
 
         CUDA_CHECK(cudaFree(dev_ptr));
     }
+
+#if defined(GGML_USE_VMM)
+    // grant access to the physical device backing this buffer; that is the step that actually commits
+    // the physical memory under WDDM (issue #12), so its failure is the out-of-memory signal
+    CUresult vmm_set_access(CUdeviceptr ptr, size_t nbytes) const {
+        CUmemAccessDesc access = {};
+        access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+        access.location.id   = ggml_cuda_get_physical_device(device);
+        access.flags         = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+
+        return cuMemSetAccess(ptr, nbytes, &access, 1);
+    }
+
+    // commit the pages covering [offset, offset + size) of this buffer; already mapped pages are left
+    // alone. newly_mapped reports the bytes this call committed. Like the temporary pool of issue #29
+    // and the eager path of issue #7, every failing step is rolled back and reported through the
+    // return value instead of aborting: a failed call leaves the buffer exactly as it was, with the
+    // reason logged. This path never uses CU_CHECK.
+    bool vmm_ensure_mapped(size_t offset, size_t size, size_t * newly_mapped = nullptr) {
+        if (newly_mapped) {
+            *newly_mapped = 0;
+        }
+
+        if (!vmm_lazy) {
+            return true;
+        }
+
+        if (vmm_granularity == 0 || vmm_pages.empty() || offset + size > va_size) {
+            GGML_LOG_ERROR("%s: device %d: cannot map [%zu, %zu) of a lazily mapped VMM buffer of %.2f MiB "
+                    "(granularity %zu B, %zu page(s))\n", __func__, device, offset, offset + size,
+                    va_size / 1024.0 / 1024.0, vmm_granularity, vmm_pages.size());
+            return false;
+        }
+
+        ggml_cuda_set_device(device);
+
+        const size_t gran = vmm_granularity;
+
+        // the reserved range is granularity-sized and granularity-aligned, so the page boundaries
+        // inside it are exact
+        const size_t p0 = offset / gran;
+        const size_t p1 = (offset + size + gran - 1) / gran;
+
+        std::vector<std::pair<size_t, size_t>> mapped_runs; // page runs this call committed, for the rollback
+
+        auto undo = [&](void) {
+            for (const auto & r : mapped_runs) {
+                const size_t run = (r.second - r.first) * gran;
+                const CUdeviceptr ptr = (CUdeviceptr) ((char *) dev_ptr + r.first*gran);
+
+                if (cuMemUnmap(ptr, run) != CUDA_SUCCESS) {
+                    GGML_LOG_ERROR("%s: device %d: rolling back cuMemUnmap(0x%llx, %.2f MiB) failed\n", __func__,
+                            device, (unsigned long long) ptr, run / 1024.0 / 1024.0);
+                }
+
+                for (size_t p = r.first; p < r.second; ++p) {
+                    vmm_pages[p] = 0;
+                    mapped_size -= gran;
+                }
+            }
+        };
+
+        for (size_t p = p0; p < p1; ) {
+            if (vmm_pages[p]) {
+                ++p;
+                continue;
+            }
+
+            size_t q = p;
+            while (q < p1 && !vmm_pages[q]) {
+                ++q;
+            }
+
+            const size_t      run  = (q - p) * gran;
+            const CUdeviceptr ptr  = (CUdeviceptr) ((char *) dev_ptr + p*gran);
+
+            CUmemAllocationProp prop = {};
+            prop.type          = CU_MEM_ALLOCATION_TYPE_PINNED;
+            prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+            prop.location.id   = ggml_cuda_get_physical_device(device);
+
+            CUmemGenericAllocationHandle handle;
+            CUresult err = cuMemCreate(&handle, run, &prop, 0);
+            if (err != CUDA_SUCCESS) {
+                GGML_LOG_ERROR("%s: device %d: cuMemCreate(%.2f MiB) for a lazily mapped VMM buffer failed: %s\n",
+                        __func__, device, run / 1024.0 / 1024.0, ggml_cuda_vmm_errstr(err));
+                undo();
+                return false;
+            }
+
+            err = cuMemMap(ptr, run, 0, handle, 0);
+            if (err != CUDA_SUCCESS) {
+                GGML_LOG_ERROR("%s: device %d: cuMemMap(0x%llx, %.2f MiB) failed: %s\n", __func__, device,
+                        (unsigned long long) ptr, run / 1024.0 / 1024.0, ggml_cuda_vmm_errstr(err));
+                (void) cuMemRelease(handle);
+                undo();
+                return false;
+            }
+
+            // the handle is no longer needed once the range is mapped, as in the eager path and the pool
+            if (cuMemRelease(handle) != CUDA_SUCCESS) {
+                GGML_LOG_ERROR("%s: device %d: cuMemRelease after cuMemMap failed\n", __func__, device);
+            }
+
+            err = vmm_set_access(ptr, run);
+            if (err != CUDA_SUCCESS) {
+                size_t free_now  = 0;
+                size_t total_now = 0;
+                if (cuMemGetInfo(&free_now, &total_now) != CUDA_SUCCESS) {
+                    free_now = 0;
+                    total_now = 0;
+                }
+                GGML_LOG_ERROR("%s: device %d: cuMemSetAccess(0x%llx, %.2f MiB) failed: %s (%.2f MiB of %.2f "
+                        "MiB free; %.2f MiB of the buffer at 0x%llx is already backed)\n", __func__, device,
+                        (unsigned long long) ptr, run / 1024.0 / 1024.0, ggml_cuda_vmm_errstr(err),
+                        free_now / 1024.0 / 1024.0, total_now / 1024.0 / 1024.0,
+                        mapped_size / 1024.0 / 1024.0, (unsigned long long) dev_ptr);
+                (void) cuMemUnmap(ptr, run);
+                undo();
+                return false;
+            }
+
+            // issue #8: pages the driver has never handed out read as zero, but a page this process
+            // used before (for example one the temporary pool of #29 gave back) is not guaranteed to
+            // be - clear every page just committed, so a newly mapped page always reads as zero. the
+            // memset runs on this thread's stream and is synced before the call returns
+            if (cudaMemsetAsync((void *) ptr, 0, run, cudaStreamPerThread) != cudaSuccess) {
+                (void) cudaGetLastError();
+                GGML_LOG_ERROR("%s: device %d: clearing the freshly mapped VMM pages at 0x%llx (%.2f MiB) "
+                        "failed\n", __func__, device, (unsigned long long) ptr, run / 1024.0 / 1024.0);
+                (void) cuMemUnmap(ptr, run);
+                undo();
+                return false;
+            }
+            if (cudaStreamSynchronize(cudaStreamPerThread) != cudaSuccess) {
+                (void) cudaGetLastError();
+                GGML_LOG_ERROR("%s: device %d: waiting for the clear of the VMM pages at 0x%llx failed\n", __func__,
+                        device, (unsigned long long) ptr);
+                (void) cuMemUnmap(ptr, run);
+                undo();
+                return false;
+            }
+
+            for (size_t r = p; r < q; ++r) {
+                vmm_pages[r] = 1;
+                mapped_size += gran;
+            }
+
+            if (newly_mapped) {
+                *newly_mapped += run;
+            }
+            mapped_runs.push_back({ p, q });
+
+            p = q;
+        }
+
+        return true;
+    }
+
+    // write value to the mapped pages covering [offset, offset + size); unmapped pages are skipped -
+    // they hold no data and already read as zero, and issue #8 requires clear not to map them just to
+    // zero them
+    void vmm_memset_mapped(size_t offset, size_t size, uint8_t value) {
+        if (!vmm_lazy || size == 0) {
+            return;
+        }
+
+        const size_t gran = vmm_granularity;
+        const size_t p0   = offset / gran;
+        const size_t p1   = std::min((offset + size + gran - 1) / gran, vmm_pages.size());
+
+        for (size_t p = p0; p < p1; ) {
+            if (!vmm_pages[p]) {
+                ++p;
+                continue;
+            }
+
+            size_t q = p;
+            while (q < p1 && vmm_pages[q]) {
+                ++q;
+            }
+
+            const size_t head = std::max(offset, p*gran);
+            const size_t tail = std::min(offset + size, q*gran);
+
+            ggml_cuda_set_device(device);
+            CUDA_CHECK(cudaMemsetAsync((char *) dev_ptr + head, value, tail - head, cudaStreamPerThread));
+
+            p = q;
+        }
+    }
+#else // defined(GGML_USE_VMM)
+    // vmm_lazy is never set in a build without VMM support, so these are never reached
+    bool vmm_ensure_mapped(size_t, size_t, size_t * newly_mapped = nullptr) {
+        if (newly_mapped) {
+            *newly_mapped = 0;
+        }
+        return !vmm_lazy;
+    }
+
+    void vmm_memset_mapped(size_t, size_t, uint8_t) {}
+#endif // defined(GGML_USE_VMM)
 };
 
 static void ggml_backend_cuda_buffer_free_buffer(ggml_backend_buffer_t buffer) {
@@ -916,6 +1154,69 @@ static void * ggml_backend_cuda_buffer_get_base(ggml_backend_buffer_t buffer) {
     return ctx->dev_ptr;
 }
 
+// DenseX (issue #8): make sure [offset, offset + size) of the buffer that backs tensor - offsets are
+// relative to tensor->data - is backed by physical memory. Buffers that are not lazily mapped (every
+// cudaMalloc buffer, and the eager VMM buffers of issue #7) need nothing and return true, so callers
+// can call this unconditionally. A buffer that is still in planning (no buffer yet) also returns
+// true: mapping only happens once the buffer exists.
+static bool ggml_cuda_vmm_map_tensor(const ggml_tensor * tensor, size_t offset, size_t size, size_t * newly_mapped = nullptr) {
+    ggml_backend_buffer_t buffer = tensor ? tensor->buffer : nullptr;
+    if (buffer == nullptr || buffer->context == nullptr) {
+        return true;
+    }
+
+    ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
+    if (!ctx->is_vmm || !ctx->vmm_lazy) {
+        return true;
+    }
+
+    const size_t base = (char *) tensor->data - (char *) ctx->dev_ptr;
+
+    return ctx->vmm_ensure_mapped(base + offset, size, newly_mapped);
+}
+
+// a lazily mapped range cannot be read or written; proceeding would fault the GPU and poison the
+// context (issue #12), and these hooks have no way to report an error, so stop here with the reason
+// already logged by vmm_ensure_mapped()
+static void ggml_cuda_vmm_map_or_abort(const ggml_tensor * tensor, size_t offset, size_t size, const char * op) {
+    if (ggml_cuda_vmm_map_tensor(tensor, offset, size)) {
+        return;
+    }
+
+    GGML_ABORT("could not back %zu B of %s [%s] at the device memory it needs - see the error above",
+            size, tensor->name, op);
+}
+
+// issue #8: the mapping entry point for the KV cache. llama resolves these two by name through
+// ggml_backend_cuda_reg_get_proc_address(), see llama_kv_storage in src/llama-kv-storage.cpp.
+// offset and size are relative to tensor->data; a tensor that is not on a lazily mapped buffer needs
+// nothing and returns true. newly_mapped (optional) reports the bytes this call backed.
+static bool ggml_backend_cuda_vmm_map(ggml_tensor * tensor, size_t offset, size_t size, size_t * newly_mapped) {
+    return ggml_cuda_vmm_map_tensor(tensor, offset, size, newly_mapped);
+}
+
+// issue #8: report whether a buffer is a lazily mapped VMM buffer, with the reserved address space and
+// the bytes currently backed
+static bool ggml_backend_cuda_vmm_buffer_lazy_info(ggml_backend_buffer_t buffer, size_t * va_size, size_t * mapped_size) {
+    if (buffer == nullptr || buffer->context == nullptr) {
+        return false;
+    }
+
+    ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
+    if (!ctx->is_vmm || !ctx->vmm_lazy) {
+        return false;
+    }
+
+    if (va_size) {
+        *va_size = ctx->va_size;
+    }
+    if (mapped_size) {
+        *mapped_size = ctx->mapped_size;
+    }
+
+    return true;
+}
+
 static enum ggml_status ggml_backend_cuda_buffer_init_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
 
@@ -930,9 +1231,17 @@ static enum ggml_status ggml_backend_cuda_buffer_init_tensor(ggml_backend_buffer
         const size_t padded_size = ggml_backend_buft_get_alloc_size(buffer->buft, tensor);
 
         if (padded_size > original_size) {
-            ggml_cuda_set_device(ctx->device);
-            CUDA_CHECK(cudaMemsetAsync((char *)tensor->data + original_size, 0, padded_size - original_size, cudaStreamPerThread));
-            CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+            if (ctx->vmm_lazy) {
+                // issue #8: do not map the padding pages just to clear them - an unmapped page reads
+                // as zero, which is what this zero-fill is for, and mapping it would spend device
+                // memory on it. pages that happen to be mapped already are still cleared
+                ctx->vmm_memset_mapped(((char *) tensor->data - (char *) ctx->dev_ptr) + original_size,
+                        padded_size - original_size, 0);
+            } else {
+                ggml_cuda_set_device(ctx->device);
+                CUDA_CHECK(cudaMemsetAsync((char *)tensor->data + original_size, 0, padded_size - original_size, cudaStreamPerThread));
+                CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+            }
         }
     }
     return GGML_STATUS_SUCCESS;
@@ -940,6 +1249,19 @@ static enum ggml_status ggml_backend_cuda_buffer_init_tensor(ggml_backend_buffer
 
 static void ggml_backend_cuda_buffer_memset_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
+
+    // issue #8: zeroing is a write. a zero can be limited to the pages that are already mapped, because
+    // an unmapped page already reads as zero (see ggml_backend_buffer_clear); any other value has to be
+    // readable back, so the range is mapped first
+    if (ctx->vmm_lazy) {
+        if (value != 0 && !ctx->vmm_ensure_mapped(((char *) tensor->data - (char *) ctx->dev_ptr) + offset, size)) {
+            GGML_ABORT("could not back %zu B of %s to fill it with 0x%02x - see the error above",
+                    size, tensor->name, value);
+        }
+
+        ctx->vmm_memset_mapped(((char *) tensor->data - (char *) ctx->dev_ptr) + offset, size, value);
+        return;
+    }
 
     ggml_cuda_set_device(ctx->device);
     CUDA_CHECK(cudaMemsetAsync((char *) tensor->data + offset, value, size, cudaStreamPerThread));
@@ -949,6 +1271,8 @@ static void ggml_backend_cuda_buffer_memset_tensor(ggml_backend_buffer_t buffer,
 static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
+    ggml_cuda_vmm_map_or_abort(tensor, offset, size, __func__);
+
     ggml_cuda_set_device(ctx->device);
     CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
@@ -956,6 +1280,8 @@ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
 
 static void ggml_backend_cuda_buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
+
+    ggml_cuda_vmm_map_or_abort(tensor, offset, size, __func__);
 
     ggml_cuda_set_device(ctx->device);
     CUDA_CHECK(cudaMemcpyAsync(data, (const char *) tensor->data + offset, size, cudaMemcpyDeviceToHost, cudaStreamPerThread));
@@ -965,6 +1291,10 @@ static void ggml_backend_cuda_buffer_get_tensor(ggml_backend_buffer_t buffer, co
 static void ggml_backend_cuda_buffer_set_tensor_2d(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor, const void * data,
         size_t offset, size_t size, size_t n_copies, size_t stride_tensor, size_t stride_data) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
+
+    // issue #8: map the whole span the copies cover, the rows between them included - a lazily mapped
+    // row would otherwise fault
+    ggml_cuda_vmm_map_or_abort(tensor, offset, size + (n_copies > 0 ? n_copies - 1 : 0)*stride_tensor, __func__);
 
     ggml_cuda_set_device(ctx->device);
     CUDA_CHECK(cudaMemcpy2DAsync(
@@ -976,6 +1306,8 @@ static void ggml_backend_cuda_buffer_get_tensor_2d(ggml_backend_buffer_t buffer,
         size_t offset, size_t size, size_t n_copies, size_t stride_tensor, size_t stride_data) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
 
+    ggml_cuda_vmm_map_or_abort(tensor, offset, size + (n_copies > 0 ? n_copies - 1 : 0)*stride_tensor, __func__);
+
     ggml_cuda_set_device(ctx->device);
     CUDA_CHECK(cudaMemcpy2DAsync(
         data, stride_data, (const char *) tensor->data + offset, stride_tensor, size, n_copies, cudaMemcpyDeviceToHost, cudaStreamPerThread));
@@ -986,6 +1318,19 @@ static bool ggml_backend_cuda_buffer_cpy_tensor(ggml_backend_buffer_t buffer, co
     if (ggml_backend_buffer_is_cuda(src->buffer)) {
         ggml_backend_cuda_buffer_context * src_ctx = (ggml_backend_cuda_buffer_context *)src->buffer->context;
         ggml_backend_cuda_buffer_context * dst_ctx = (ggml_backend_cuda_buffer_context *)dst->buffer->context;
+
+        // issue #8: both ends have to be backed - the copy reads the whole source view and writes the
+        // whole destination view, which for a stream copy is the entire block of that stream
+        if (dst_ctx->vmm_lazy) {
+            if (!dst_ctx->vmm_ensure_mapped((char *) dst->data - (char *) dst_ctx->dev_ptr, ggml_nbytes(dst))) {
+                GGML_ABORT("could not back %zu B of %s to receive a device copy - see the error above",
+                        ggml_nbytes(dst), dst->name);
+            }
+        }
+        if (src_ctx->vmm_lazy) {
+            ggml_cuda_vmm_map_or_abort(src, 0, ggml_nbytes(src), __func__);
+        }
+
         // compare the backing physical devices: distinct virtual devices may share one physical GPU,
         // in which case a same-device copy (not a peer copy) is required
         const int src_physical = ggml_cuda_get_physical_device(src_ctx->device);
@@ -1009,6 +1354,21 @@ static bool ggml_backend_cuda_buffer_cpy_tensor(ggml_backend_buffer_t buffer, co
 
 static void ggml_backend_cuda_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
+
+    // issue #8: clearing a lazily mapped buffer with zeros must not map it all just to zero it - that
+    // would spend exactly the memory the switch is there to save, and an unmapped page already reads as
+    // zero. only the pages that are backed are written. a clear to any other value is a real write of
+    // the whole buffer, so the pages are mapped first
+    if (ctx->vmm_lazy) {
+        if (value != 0 && !ctx->vmm_ensure_mapped(0, buffer->size)) {
+            GGML_ABORT("could not back the whole of a lazily mapped VMM buffer to clear it to 0x%02x - see the"
+                    " error above", value);
+        }
+
+        ctx->vmm_memset_mapped(0, buffer->size, value);
+        CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+        return;
+    }
 
     ggml_cuda_set_device(ctx->device);
     CUDA_CHECK(cudaMemsetAsync(ctx->dev_ptr, value, buffer->size, cudaStreamPerThread));
@@ -1287,6 +1647,47 @@ static CUdeviceptr ggml_cuda_vmm_alloc(int device, size_t size, size_t * mapped_
     return va_base;
 }
 
+// issue #8: reserve the address space of a lazily mapped buffer - no physical memory is committed
+// yet. Unlike the eager path there is deliberately no free-VRAM pre-check here: that check exists
+// because eager mapping commits map_size bytes in one cuMemSetAccess (issue #12), while a lazily
+// mapped buffer commits one page range at a time later on, and that is where an out-of-memory is
+// reported. Refusing the buffer up front would defeat the switch: reserving more address space than
+// the card can back is exactly what lets a context larger than the free VRAM be created at all.
+static CUdeviceptr ggml_cuda_vmm_reserve(int device, size_t size, size_t * granularity, size_t * reserved_size) {
+    *granularity   = 0;
+    *reserved_size = 0;
+
+    ggml_cuda_set_device(device);
+
+    const ggml_cuda_device_info & info = ggml_cuda_info();
+    const size_t gran                  = info.devices[device].vmm_granularity;
+
+    if (!info.devices[device].vmm || gran == 0) {
+        GGML_LOG_ERROR("%s: device %d does not support VMM\n", __func__, device);
+        return 0;
+    }
+
+    const size_t reserve_size = gran * ((size + gran - 1) / gran);
+
+    CUdeviceptr va_base = 0;
+    const CUresult err = cuMemAddressReserve(&va_base, reserve_size, gran, 0, 0);
+    if (err != CUDA_SUCCESS) {
+        GGML_LOG_ERROR("%s: device %d: cuMemAddressReserve(%.2f MiB) failed: %s\n", __func__, device,
+                reserve_size / 1024.0 / 1024.0, ggml_cuda_vmm_errstr(err));
+        return 0;
+    }
+
+    *granularity   = gran;
+    *reserved_size = reserve_size;
+
+    GGML_LOG_INFO("%s: device %d: reserved %.2f MiB of VMM address space at 0x%llx for a lazily mapped "
+            "buffer (requested %.2f MiB, granularity %zu B, %zu page(s)) - nothing is backed yet, pages "
+            "are mapped as the KV uses them\n", __func__, device, reserve_size / 1024.0 / 1024.0,
+            (unsigned long long) va_base, size / 1024.0 / 1024.0, gran, reserve_size / gran);
+
+    return va_base;
+}
+
 #endif // defined(GGML_USE_VMM)
 
 // wrapper buffer type that only selects the allocator above. The buffers it returns report the plain
@@ -1300,6 +1701,10 @@ static CUdeviceptr ggml_cuda_vmm_alloc(int device, size_t size, size_t * mapped_
 struct ggml_backend_cuda_vmm_buffer_type_context {
     int device;
     std::string name;
+
+    // DenseX (issue #8): the buffer type of DENSEX_KV_LAZY - the address space is reserved and the pages
+    // are mapped as the KV uses them instead of all at once (see ggml_backend_cuda_vmm_lazy_buffer_type)
+    bool lazy = false;
 };
 
 static ggml_backend_buffer_type_t ggml_backend_cuda_vmm_buffer_type_base(ggml_backend_buffer_type_t buft) {
@@ -1331,6 +1736,29 @@ static ggml_backend_buffer_t ggml_backend_cuda_vmm_buffer_type_alloc_buffer(ggml
     return nullptr;
 #else
     ggml_backend_cuda_vmm_buffer_type_context * buft_ctx = (ggml_backend_cuda_vmm_buffer_type_context *) buft->context;
+
+    // issue #8: the lazy buffer type reserves the address space and maps the pages on demand instead of
+    // backing the whole buffer here; the type of issue #7 keeps backing it all at once
+    if (buft_ctx->lazy) {
+        size_t granularity  = 0;
+        size_t reserve_size = 0;
+
+        const CUdeviceptr va_base = ggml_cuda_vmm_reserve(buft_ctx->device, size, &granularity, &reserve_size);
+        if (va_base == 0) {
+            // ggml_cuda_vmm_reserve() logged the reason
+            return nullptr;
+        }
+
+        ggml_backend_cuda_buffer_context * ctx = new ggml_backend_cuda_buffer_context(buft_ctx->device, (void *) va_base);
+        ctx->is_vmm          = true;
+        ctx->va_size         = reserve_size;
+        ctx->mapped_size     = 0; // nothing backed yet
+        ctx->vmm_lazy        = true;
+        ctx->vmm_granularity = granularity;
+        ctx->vmm_pages.assign(reserve_size / granularity, 0);
+
+        return ggml_backend_buffer_init(base_buft, ggml_backend_cuda_buffer_interface, ctx, size);
+    }
 
     size_t mapped_size = 0;
     const CUdeviceptr va_base = ggml_cuda_vmm_alloc(buft_ctx->device, size, &mapped_size);
@@ -1399,6 +1827,37 @@ ggml_backend_buffer_type_t ggml_backend_cuda_vmm_buffer_type(int device) {
     }
 
     return &ggml_backend_cuda_vmm_buffer_types[device];
+}
+
+// DenseX (issue #8): the buffer type of DENSEX_KV_LAZY. It is the same wrapper as the type of issue #7 -
+// only the allocator differs, and it differs in one thing only: the physical pages of the reserved range
+// are not committed up front but as llama_kv_storage asks for them (vmm_ensure_mapped). Everything else,
+// including what the buffers report as their buffer type and interface, is unchanged.
+ggml_backend_buffer_type_t ggml_backend_cuda_vmm_lazy_buffer_type(int device) {
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+
+    if (device >= ggml_backend_cuda_get_device_count()) {
+        return nullptr;
+    }
+
+    static ggml_backend_buffer_type ggml_backend_cuda_vmm_lazy_buffer_types[GGML_CUDA_MAX_DEVICES];
+
+    static bool ggml_backend_cuda_vmm_lazy_buffer_type_initialized = false;
+
+    if (!ggml_backend_cuda_vmm_lazy_buffer_type_initialized) {
+        for (int i = 0; i < ggml_backend_cuda_get_device_count(); i++) {
+            ggml_backend_cuda_vmm_lazy_buffer_types[i] = {
+                /* .iface    = */ ggml_backend_cuda_vmm_buffer_type_interface,
+                /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_cuda_reg(), i),
+                /* .context  = */ new ggml_backend_cuda_vmm_buffer_type_context{
+                    i, GGML_CUDA_NAME + std::to_string(i) + "_VMM_lazy", /* lazy */ true },
+            };
+        }
+        ggml_backend_cuda_vmm_lazy_buffer_type_initialized = true;
+    }
+
+    return &ggml_backend_cuda_vmm_lazy_buffer_types[device];
 }
 
 // Communication context for multi-GPU AllReduce during tensor parallelism.
@@ -2979,6 +3438,9 @@ static void ggml_backend_cuda_set_tensor_async(ggml_backend_t backend, ggml_tens
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
+    // issue #8: a lazily mapped buffer has to be backed over the range the copy touches
+    ggml_cuda_vmm_map_or_abort(tensor, offset, size, __func__);
+
     CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream()));
 }
 
@@ -2987,6 +3449,8 @@ static void ggml_backend_cuda_get_tensor_async(ggml_backend_t backend, const ggm
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
+
+    ggml_cuda_vmm_map_or_abort(tensor, offset, size, __func__);
 
     CUDA_CHECK(cudaMemcpyAsync(data, (const char *) tensor->data + offset, size, cudaMemcpyDeviceToHost, cuda_ctx->stream()));
 }
@@ -2998,6 +3462,8 @@ static void ggml_backend_cuda_set_tensor_2d_async(ggml_backend_t backend, struct
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
+    ggml_cuda_vmm_map_or_abort(tensor, offset, size + (n_copies > 0 ? n_copies - 1 : 0)*stride_tensor, __func__);
+
     CUDA_CHECK(cudaMemcpy2DAsync(
         (char *) tensor->data + offset, stride_tensor, data, stride_data, size, n_copies, cudaMemcpyHostToDevice, cuda_ctx->stream()));
 }
@@ -3008,6 +3474,8 @@ static void ggml_backend_cuda_get_tensor_2d_async(ggml_backend_t backend, const 
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
+
+    ggml_cuda_vmm_map_or_abort(tensor, offset, size + (n_copies > 0 ? n_copies - 1 : 0)*stride_tensor, __func__);
 
     CUDA_CHECK(cudaMemcpy2DAsync(
         data, stride_data, (const char *) tensor->data + offset, stride_tensor, size, n_copies, cudaMemcpyDeviceToHost, cuda_ctx->stream()));
@@ -3038,6 +3506,10 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
 #endif // NDEBUG
         return false;
     }
+
+    // issue #8: both ends of a device copy have to be backed
+    ggml_cuda_vmm_map_or_abort(src, 0, ggml_nbytes(src), __func__);
+    ggml_cuda_vmm_map_or_abort(dst, 0, ggml_nbytes(dst), __func__);
 
     if (backend_src != backend_dst) {
         // copy on src stream
@@ -6486,6 +6958,21 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
 #else
         return nullptr;
 #endif // defined(GGML_USE_VMM)
+    }
+    // DenseX (issue #8): the buffer type of DENSEX_KV_LAZY and the two hooks llama_kv_storage needs to
+    // back its pages - see ggml_backend_cuda_vmm_lazy_buffer_type() and vmm_ensure_mapped()
+    if (strcmp(name, "ggml_backend_cuda_vmm_lazy_buffer_type") == 0) {
+#if defined(GGML_USE_VMM)
+        return (void *)ggml_backend_cuda_vmm_lazy_buffer_type;
+#else
+        return nullptr;
+#endif // defined(GGML_USE_VMM)
+    }
+    if (strcmp(name, "ggml_backend_cuda_vmm_map") == 0) {
+        return (void *)ggml_backend_cuda_vmm_map;
+    }
+    if (strcmp(name, "ggml_backend_cuda_vmm_buffer_lazy_info") == 0) {
+        return (void *)ggml_backend_cuda_vmm_buffer_lazy_info;
     }
     return nullptr;
 }

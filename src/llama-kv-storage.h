@@ -18,12 +18,15 @@ class llama_io_read_i;
 // them, the byte layout of a cell inside a tensor, and the views and writes the compute graph runs on them. Callers
 // name layers, streams and cells; only this class turns them into byte ranges and strides.
 //
-// Contract (what each operation touches; the backing is still the full, originally allocated buffer):
+// Contract (what each operation touches; with the full backing the buffer is the originally allocated
+// one throughout):
 //   - allocation:  ggml_backend_alloc_ctx_tensors() runs the backend's init_tensor hook for each tensor before this
 //                  class sees the buffer - CUDA may zero the alloc padding of quantized tensors there - and only
 //                  then does add_buffer() take that buffer and zero-fill it, padding included, so it never holds
-//                  NaNs. A lazily mapped backing must have the init writes mapped too. Planning a graph - the
-//                  reserve and dummy graphs - allocates no access and maps nothing.
+//                  NaNs. A lazily mapped backing clears only the pages it already has, and leaves the alloc padding
+//                  unmapped instead of writing zeros into it: an unmapped page reads as zero, which is what that
+//                  zero-fill is for. Planning a graph - the reserve and dummy graphs - allocates no access and maps
+//                  nothing.
 //   - clear:       clear() zero-fills every owned buffer (layers shared from another cache are not owned and are
 //                  left alone).
 //   - state I/O:   write_k/v, read_k/v and clear_k/v work on cell ranges of one stream, in the session order and
@@ -44,15 +47,19 @@ class llama_io_read_i;
 //                  K-shift (every cell of every stream, read and rewritten). llama_kv_cache_context::apply() calls
 //                  it for every ubatch, including when the graph is reused, and update() calls it before running the
 //                  shift graph; the planning path never calls it. With the full backing prepare() only checks the
-//                  bounds; a lazily mapped backing (E3) maps the ranges here.
+//                  bounds; a lazily mapped backing (issue #8) maps the ranges here, and skips the V tensors of a
+//                  K-shift because that operation only touches K.
 //   - not owned:   the MTP draft cache is a separate llama_kv_cache, so it has its own storage instance; the layers
 //                  it shares with the target cache (the share callback) are pushed into its layers without being
 //                  owned by it, and their buffers stay with the target cache.
 //   - outside this contract for now (raw tensors, other architectures - the model DenseX trains on never reaches
 //     them): src/llama-kv-cache-dsv4.cpp does host-side state write, read and clear of the whole K of one stream
 //     through get_k_storage, and src/llama-memory-hybrid-idx.cpp has a k-pool that views full K across streams. A
-//     lazily mapped backing (E3) needs both moved behind the storage first.
-// With the full backing all of these are always valid; a lazily mapped backing (E3) must map what an execution
+//     lazily mapped backing handles the first through the backend's own mapping hooks, which map what a state read
+//     or write touches (correct, but it backs the whole K); the k-pool reaches cells through graph operators that
+//     this class is never told about, so with hparams.indexer_kpool set the whole K is backed up front instead of
+//     growing per ubatch.
+// With the full backing all of these are always valid; a lazily mapped backing (issue #8) maps what an execution
 // touches before it runs, and never in planning.
 class llama_kv_storage {
 public:
@@ -127,11 +134,15 @@ public:
         uint32_t   strm;
         cell_range cells;
         bool       write;
+
+        // true when the access only touches K, so a lazily mapped backing does not have to back V for it
+        // (the K-shift rewrites the rotated part of K over the whole capacity; issue #8)
+        bool k_only = false;
     };
 
     // called before every execution that touches the K/V data (each ubatch, also when the graph is reused, and the
     // K-shift), never while planning. With the full backing there is nothing to map: it checks that the accesses are
-    // in bounds. A lazily mapped backing (E3) maps them here.
+    // in bounds. A lazily mapped backing (issue #8) maps them here.
     void prepare(const std::vector<access> & acc) const;
 
     uint32_t get_kv_size() const { return kv_size; }
@@ -144,4 +155,32 @@ private:
 
     // ggml contexts for the KV cache along with the allocated backend buffers
     std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> ctxs_bufs;
+
+    // DenseX (issue #8): the page-granular backing of DENSEX_KV_LAZY. The backend owns the pages of the buffer and
+    // maps them; this class decides how far into each stream an execution goes, because that is what neither side
+    // can know alone: the backend cannot tell which cells a graph of set_rows writes, and this class cannot tell
+    // where a page boundary falls inside a row. See llama-kv-storage.cpp for the logging and the failure path.
+    using vmm_map_fn  = bool (*)(ggml_tensor * tensor, size_t offset, size_t size, size_t * newly_mapped);
+    using vmm_info_fn = bool (*)(ggml_backend_buffer_t buffer, size_t * va_size, size_t * mapped_size);
+
+    struct lazy_backing {
+        bool       resolved = false;  // the backend registry has been asked for the two hooks below
+        vmm_map_fn  map      = nullptr;
+        vmm_info_fn info     = nullptr;
+
+        bool     active  = false;  // at least one owned buffer of this cache is lazily mapped
+        uint32_t step    = 0;      // cells backed at a time, the first map and every expansion (issue #8)
+        bool     transposed_v_backed = false; // a transposed V is backed a whole stream at a time (see lazy_map)
+
+        // cells [0, mapped_k[strm]) backed in the K, and [0, mapped_v[strm]) backed in the V, of every layer;
+        // kept apart because an access can touch K only, as the K-shift does
+        std::vector<uint32_t> mapped_k;
+        std::vector<uint32_t> mapped_v;
+    };
+
+    mutable lazy_backing lazy;
+
+    void lazy_attach(ggml_backend_buffer_t buf);
+    bool lazy_map(uint32_t strm, uint32_t cells, bool k_only) const;
+    bool lazy_mapped_mib(double * backed, double * reserved) const;
 };

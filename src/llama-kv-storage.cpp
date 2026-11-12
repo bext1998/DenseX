@@ -1,8 +1,11 @@
 #include "llama-kv-storage.h"
 
+#include "llama-densex-env.h"
 #include "llama-hparams.h"
 #include "llama-impl.h"
 #include "llama-io.h"
+
+#include <algorithm>
 
 llama_kv_storage::llama_kv_storage(const llama_hparams & hparams, bool v_trans, uint32_t kv_size) :
     hparams(hparams), v_trans(v_trans), kv_size(kv_size) {
@@ -11,6 +14,9 @@ llama_kv_storage::llama_kv_storage(const llama_hparams & hparams, bool v_trans, 
 void llama_kv_storage::add_buffer(ggml_context_ptr ctx, ggml_backend_buffer_t buf) {
     ggml_backend_buffer_clear(buf, 0);
     ctxs_bufs.emplace_back(std::move(ctx), buf);
+
+    // DenseX (issue #8): note whether this buffer maps its pages on demand - see lazy_attach()
+    lazy_attach(buf);
 }
 
 void llama_kv_storage::clear() {
@@ -284,6 +290,214 @@ ggml_tensor * llama_kv_storage::view_k_rope(ggml_context * ctx, uint32_t ikv, ui
             ggml_row_size(layer.k->type, n_embd_nope));
 }
 
+// DenseX (issue #8): DENSEX_KV_LAZY=1 puts the offloaded KV cache on a CUDA buffer that keeps the address
+// space of the whole cache but holds no physical memory yet - the driver hands out its 2 MiB pages as the
+// KV uses them, and the backend tracks which pages it has (see ggml_backend_cuda_vmm_map and
+// vmm_ensure_mapped() in ggml/src/ggml-cuda/ggml-cuda.cu).
+//
+// The two halves only work together: the backend cannot tell which cells the graph of a ubatch writes, and
+// this class cannot tell where a page boundary falls inside a row. So the backend exports the mapping
+// through its registry, and prepare() - which is told what every execution touches - asks for the pages of
+// those cells before the execution runs. Planning a graph never calls prepare(), so a reserve or a dummy
+// graph maps nothing.
+//
+// K and a non-transposed V hold one row per cell, so cells [a, b) of a stream are one contiguous byte range
+// of that stream's view, and one mapping call per tensor is enough. A transposed V holds one row per
+// embedding element, so a range of cells reaches into every row: there the whole V is backed once and the
+// switch saves nothing on it, which the log says once.
+
+void llama_kv_storage::lazy_attach(ggml_backend_buffer_t buf) {
+    const llama_densex_env & env = llama_densex_env_get();
+
+    // DENSEX_KV_LAZY without DENSEX_KV_VMM leaves the KV cache on a plain cudaMalloc buffer; llama-densex-env
+    // already warns about that combination on the log
+    if (!env.kv_lazy || !env.kv_vmm) {
+        return;
+    }
+
+    if (!lazy.resolved) {
+        // asked once, even when the answer is no: a backend without the mapping never gets it later
+        lazy.resolved = true;
+
+        const ggml_backend_dev_t dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(buf));
+        const ggml_backend_reg_t reg = dev != nullptr ? ggml_backend_dev_backend_reg(dev) : nullptr;
+
+        if (reg == nullptr) {
+            return;
+        }
+
+        lazy.map  = (vmm_map_fn)  ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_vmm_map");
+        lazy.info = (vmm_info_fn) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_vmm_buffer_lazy_info");
+
+        // a backend that does not offer the mapping (not CUDA, or built with GGML_CUDA_NO_VMM)
+        if (lazy.map == nullptr || lazy.info == nullptr) {
+            return;
+        }
+    }
+
+    size_t reserved = 0;
+    size_t backed   = 0;
+
+    if (!lazy.info(buf, &reserved, &backed)) {
+        return; // a buffer that is fully backed already (issue #7 maps its pages eagerly)
+    }
+
+    const bool first = !lazy.active;
+
+    lazy.active = true;
+
+    if (lazy.step == 0) {
+        lazy.step = (uint32_t) std::min<int64_t>(env.kv_lazy_cells, kv_size);
+    }
+
+    if (first) {
+        LLAMA_LOG_INFO("%s: DENSEX_KV_LAZY=1: buffer '%s' reserves %.2f MiB of device address space and backs "
+                "nothing yet; the pages are taken in steps of %u cell(s) per stream "
+                "(DENSEX_KV_LAZY_CELLS=%lld, valid values: 1 .. the KV size)\n", __func__,
+                ggml_backend_buffer_name(buf), reserved / 1024.0 / 1024.0, lazy.step,
+                (long long) env.kv_lazy_cells);
+    } else {
+        LLAMA_LOG_INFO("%s: DENSEX_KV_LAZY=1: buffer '%s': %.2f MiB reserved, %.2f MiB backed\n", __func__,
+                ggml_backend_buffer_name(buf), reserved / 1024.0 / 1024.0, backed / 1024.0 / 1024.0);
+    }
+}
+
+bool llama_kv_storage::lazy_mapped_mib(double * backed, double * reserved) const {
+    *backed   = 0.0;
+    *reserved = 0.0;
+
+    if (lazy.info == nullptr) {
+        return false;
+    }
+
+    for (const auto & [_, buf] : ctxs_bufs) {
+        size_t b = 0;
+        size_t r = 0;
+
+        if (lazy.info(buf.get(), &r, &b)) {
+            *backed   += b;
+            *reserved += r;
+        }
+    }
+
+    return true;
+}
+
+// back the pages of the cells an execution touches, in the K of every layer and - unless the access does
+// not touch it, or the V is transposed - in the V too. K and V are tracked apart: a K-shift maps the whole K
+// of a stream and leaves its V where it was, and the two then grow on their own. false when the driver could
+// not hand out the pages (the reason is already on the log); a failed call leaves the buffer as it was
+// because the backend rolls its own mapping back.
+bool llama_kv_storage::lazy_map(uint32_t strm, uint32_t cells, bool k_only) const {
+    if (!lazy.active || lazy.map == nullptr || layers.empty()) {
+        return true;
+    }
+
+    const uint32_t n_stream = layers[0].k_stream.size();
+
+    if (strm >= n_stream) {
+        return false; // prepare() checks the accesses; keep this class's own table in bounds
+    }
+
+    if (lazy.mapped_k.size() < n_stream) {
+        lazy.mapped_k.resize(n_stream, 0);
+        lazy.mapped_v.resize(n_stream, 0);
+    }
+
+    // the k-pool of the idx memory variant reaches cells through graph operators this class is never told
+    // about (src/llama-memory-hybrid-idx.cpp), so there is no per-ubatch mapping to rely on there
+    const uint32_t want = hparams.indexer_kpool != 0 ? kv_size : std::min(cells, kv_size);
+
+    // grow in whole steps of DENSEX_KV_LAZY_CELLS, so that a long run of ubatches does not ask the driver
+    // for a page range on every token; the step also covers the padding the views of the graph read
+    const uint32_t step = lazy.step > 0 ? lazy.step : 1;
+
+    auto next = [&](uint32_t from) {
+        return want <= from ? from : (uint32_t) std::min<int64_t>(kv_size,
+                (int64_t) from + (int64_t) step*(((int64_t) want - from + step - 1)/step));
+    };
+
+    const uint32_t from_k = lazy.mapped_k[strm];
+    const uint32_t to_k   = next(from_k);
+
+    const uint32_t from_v = lazy.mapped_v[strm];
+    const uint32_t to_v   = k_only ? from_v : (v_trans ? kv_size : next(from_v));
+
+    if (to_k == from_k && to_v == from_v) {
+        return true;
+    }
+
+    const int64_t t0    = ggml_time_us();
+    size_t        asked = 0;
+    size_t        backed = 0;
+    bool          ok    = true;
+
+    for (const auto & layer : layers) {
+        if (to_k > from_k && layer.k_stream[strm] != nullptr) {
+            // the cells of a stream view step by its row stride, which for K includes the padding of
+            // the row and for a transposed V is the row of the widest layer (see add_layer)
+            const size_t  stride = layer.k_stream[strm]->nb[1];
+            const size_t  off    = (size_t) from_k*stride;
+            const size_t  size   = (size_t) (to_k - from_k)*stride;
+            size_t        newly  = 0;
+
+            asked += size;
+
+            if (!lazy.map(layer.k_stream[strm], off, size, &newly)) {
+                ok = false;
+                break;
+            }
+
+            backed += newly;
+        }
+
+        if (to_v > from_v && layer.v_stream[strm] != nullptr) {
+            const size_t  stride = layer.v_stream[strm]->nb[1];
+            const size_t  off    = (size_t) from_v*stride;
+            const size_t  size   = (size_t) (to_v - from_v)*stride;
+            size_t        newly  = 0;
+
+            asked += size;
+
+            if (!lazy.map(layer.v_stream[strm], off, size, &newly)) {
+                ok = false;
+                break;
+            }
+
+            backed += newly;
+        }
+    }
+
+    if (!ok) {
+        return false;
+    }
+
+    lazy.mapped_k[strm] = to_k;
+    lazy.mapped_v[strm] = to_v;
+
+    if (v_trans && from_v == 0 && to_v > 0 && !lazy.transposed_v_backed) {
+        lazy.transposed_v_backed = true;
+
+        LLAMA_LOG_WARN("%s: DENSEX_KV_LAZY=1: this cache stores V transposed, so any range of cells reaches "
+                "every row of V - V is backed whole (%zu cell(s) of %zu layer(s)) and the switch saves "
+                "nothing on it\n", __func__, to_v, layers.size());
+    }
+
+    double backed_total   = 0.0;
+    double reserved_total = 0.0;
+
+    lazy_mapped_mib(&backed_total, &reserved_total);
+
+    LLAMA_LOG_INFO("%s: lazy KV: stream %u: K cells [%u, %u), V cells [%u, %u) of %zu layer(s) - %.2f MiB "
+            "asked for, %.2f MiB newly backed (whole pages), %.2f / %.2f MiB of the KV backing in use, "
+            "%.2f ms\n", __func__, strm, from_k, to_k, from_v, to_v, layers.size(),
+            asked / 1024.0 / 1024.0, backed / 1024.0 / 1024.0,
+            backed_total / 1024.0 / 1024.0, reserved_total / 1024.0 / 1024.0,
+            (ggml_time_us() - t0) / 1000.0);
+
+    return true;
+}
+
 void llama_kv_storage::prepare(const std::vector<access> & acc) const {
     if (layers.empty()) {
         return;
@@ -294,5 +508,18 @@ void llama_kv_storage::prepare(const std::vector<access> & acc) const {
     for (const auto & a : acc) {
         GGML_ASSERT(a.strm < n_stream);
         GGML_ASSERT(a.cells.first < a.cells.second && a.cells.second <= kv_size);
+    }
+
+    if (!lazy.active) {
+        return;
+    }
+
+    // the first map of a stream is an ordinary one: the cells this execution reads and writes, rounded up
+    // to a whole step - so a stream that is never used costs nothing
+    for (const auto & a : acc) {
+        if (!lazy_map(a.strm, a.cells.second, a.k_only)) {
+            GGML_ABORT("the lazily mapped KV cache could not back stream %u up to cell %u - the device is out"
+                    " of memory (see the error above)", a.strm, a.cells.second);
+        }
     }
 }

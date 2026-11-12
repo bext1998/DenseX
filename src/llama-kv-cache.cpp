@@ -75,7 +75,8 @@ static ggml_backend_buffer_type_t llama_kv_cache_vmm_buft(ggml_backend_dev_t dev
     typedef ggml_backend_buffer_type_t (*buft_from_device_fn)(int);
 
     buft_from_device_fn fn = (buft_from_device_fn) ggml_backend_reg_get_proc_address(
-            reg, "ggml_backend_cuda_vmm_buffer_type");
+            reg, llama_densex_env_get().kv_lazy ? "ggml_backend_cuda_vmm_lazy_buffer_type"
+                                                : "ggml_backend_cuda_vmm_buffer_type");
 
     static bool warned = false;
 
@@ -1402,7 +1403,7 @@ std::vector<llama_kv_storage::access> llama_kv_cache::get_access_shift() const {
 
     // view_k_rope spans kv_size*n_stream cells of every layer - the whole K of every stream, in place
     for (uint32_t s = 0; s < n_stream; ++s) {
-        res.push_back({ s, { 0, get_size() }, true });
+        res.push_back({ s, { 0, get_size() }, true, /* k_only */ true });
     }
 
     return res;
