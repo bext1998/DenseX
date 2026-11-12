@@ -3,12 +3,7 @@
 
 // Adjusted implementation thresholds from #28547, can be overridden at build time
 #ifndef GGML_CUDA_TOP_K_NCOLS_THRESHOLD_BITONIC
-#    if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
-// not measured on HIP/MUSA, keep the old split
-#        define GGML_CUDA_TOP_K_NCOLS_THRESHOLD_BITONIC 1024
-#    else
 #        define GGML_CUDA_TOP_K_NCOLS_THRESHOLD_BITONIC 512
-#    endif
 #endif // GGML_CUDA_TOP_K_NCOLS_THRESHOLD_BITONIC
 
 #ifndef GGML_CUDA_TOP_K_NCOLS_THRESHOLD_ARGSORT
@@ -17,11 +12,7 @@
 
 // bitonic up to this width while nrows fits in one wave of SMs, 0 disables
 #ifndef GGML_CUDA_TOP_K_NCOLS_THRESHOLD_BITONIC_FEW_ROWS
-#    if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
-#        define GGML_CUDA_TOP_K_NCOLS_THRESHOLD_BITONIC_FEW_ROWS 0
-#    else
 #        define GGML_CUDA_TOP_K_NCOLS_THRESHOLD_BITONIC_FEW_ROWS 1024
-#    endif
 #endif // GGML_CUDA_TOP_K_NCOLS_THRESHOLD_BITONIC_FEW_ROWS
 
 #ifdef GGML_CUDA_USE_CUB

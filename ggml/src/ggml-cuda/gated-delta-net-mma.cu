@@ -12,25 +12,16 @@ template <int R, int C> struct matrix {
     bf16 hi[R * C], lo[R * C];
 
     static __device__ __forceinline__ int index(int r, int c) {
-#ifdef GGML_USE_HIP
-        return r * C + c;
-#else
         return 2 * ggml_cuda_mma::swizzle<C / 2, nv_bfloat162>(r * (C / 2) + c / 2, r) + c % 2;
-#endif // GGML_USE_HIP
     }
 
     __device__ __forceinline__ void store2(int r, int c, float2 x) {
-#ifdef GGML_USE_MUSA
-        store(r, c, x.x);
-        store(r, c + 1, x.y);
-#else
         const int    i                            = index(r, c);
         const auto   h                            = __float22bfloat162_rn(x);
         const float2 rounded                      = __bfloat1622float2(h);
         *reinterpret_cast<nv_bfloat162 *>(hi + i) = h;
         *reinterpret_cast<nv_bfloat162 *>(lo + i) =
             __float22bfloat162_rn(make_float2(x.x - rounded.x, x.y - rounded.y));
-#endif // GGML_USE_MUSA
     }
 
     __device__ __forceinline__ void store(int r, int c, float x) {
@@ -56,38 +47,22 @@ template <int C, int V> struct alignas(128) shared {
     static __device__ __forceinline__ int lower_index(int r, int c) { return r * C + c; }
 };
 
-#if defined(AMPERE_MMA_AVAILABLE) || (defined(AMD_WMMA_AVAILABLE) && defined(RDNA3))
+#if defined(AMPERE_MMA_AVAILABLE)
 using namespace ggml_cuda_mma;
-#ifdef GGML_USE_HIP
-using acc    = tile<16, 16, float, DATA_LAYOUT_J_MAJOR>;
-using a_tile = tile<16, 8, nv_bfloat162, DATA_LAYOUT_I_MAJOR_MIRRORED>;
-using b_tile = a_tile;
-#else
 using acc    = tile<16, 8, float>;
 using a_tile = tile<16, 8, nv_bfloat162>;
 using b_tile = tile<8, 8, nv_bfloat162>;
-#endif // GGML_USE_HIP
 
 template <class tile_t, bool TRANS, int R, int C>
 __device__ __forceinline__ tile_t load(const matrix<R, C> & m, int row, int col, bool low) {
     tile_t       t;
     const bf16 * data = low ? m.lo : m.hi;
-#ifdef GGML_USE_HIP
-#pragma unroll
-    for (int i = 0; i < tile_t::ne; ++i) {
-        const int  r = row + tile_t::get_i(i), c = col + 2 * tile_t::get_j(i);
-        const bf16 x = data[TRANS ? m.index(c, r) : m.index(r, c)];
-        const bf16 y = data[TRANS ? m.index(c + 1, r) : m.index(r, c + 1)];
-        t.x[i]       = __float22bfloat162_rn(make_float2(__bfloat162float(x), __bfloat162float(y)));
-    }
-#else
     const auto * packed = reinterpret_cast<const nv_bfloat162 *>(data);
     if constexpr (TRANS) {
         load_ldmatrix_trans_swizzled<C / 2>(t, packed, col * (C / 2) + row / 2);
     } else {
         load_ldmatrix_swizzled<C / 2>(t, packed, row * (C / 2) + col / 2);
     }
-#endif // GGML_USE_HIP
     return t;
 }
 
@@ -108,30 +83,20 @@ __device__ __forceinline__ void product(acc & c, const matrix<AR, AC> & a, const
 
 template <int R, int C> __device__ __forceinline__ void store(matrix<R, C> & m, const acc & x, int r, int c) {
 #pragma unroll
-#ifdef GGML_USE_HIP
-    for (int i = 0; i < acc::ne; ++i) {
-        m.store(r + acc::get_i(i), c + acc::get_j(i), x.x[i]);
-    }
-#else
     for (int i = 0; i < acc::ne; i += 2) {
         m.store2(r + acc::get_i(i), c + acc::get_j(i), make_float2(x.x[i], x.x[i + 1]));
     }
-#endif // GGML_USE_HIP
 }
-#endif // defined(AMPERE_MMA_AVAILABLE) || (defined(AMD_WMMA_AVAILABLE) && defined(RDNA3))
+#endif
 
 // Each block owns V independent value columns and advances by C tokens.
 // Keep recurrent state in FP32; pack high/residual BF16 operands inside the block.
 template <int C, int V, int BLOCKS = 1>
 static __global__ __launch_bounds__(256, BLOCKS) void gdn_single(ggml_cuda_gdn_mma_args a) {
-#if defined(AMPERE_MMA_AVAILABLE) || (defined(AMD_WMMA_AVAILABLE) && defined(RDNA3))
+#if defined(AMPERE_MMA_AVAILABLE)
     static_assert(ggml_cuda_get_physical_warp_size() == 32, "GDN MMA requires 32-lane warps");
     constexpr int WARPS = 8;
-#ifdef GGML_USE_HIP
-    constexpr int N = 16;
-#else
     constexpr int N = 8;
-#endif // GGML_USE_HIP
     static_assert(C >= 16 && (C & (C - 1)) == 0 && V % N == 0 && D % V == 0, "invalid GDN tile");
     extern __shared__ __align__(128) unsigned char bytes[];
     auto &                                         s    = *reinterpret_cast<shared<C, V> *>(bytes);
@@ -360,7 +325,7 @@ static __global__ __launch_bounds__(256, BLOCKS) void gdn_single(ggml_cuda_gdn_m
 #else
     GGML_UNUSED_VARS(a);
     NO_DEVICE_CODE;
-#endif // defined(AMPERE_MMA_AVAILABLE) || (defined(AMD_WMMA_AVAILABLE) && defined(RDNA3))
+#endif
 }
 
 template <int C, int V, int BLOCKS = 1> bool init(int device) {
@@ -398,15 +363,6 @@ static gdn_path select_gdn_mma_path(int device, const ggml_cuda_gdn_mma_args & a
         return gdn_path::ar;
     }
     const auto & info = ggml_cuda_info().devices[device];
-#ifdef GGML_USE_HIP
-    if (!GGML_CUDA_CC_IS_RDNA3_5(info.cc) || a.n_tokens < 2048) {
-        return gdn_path::ar;
-    }
-    return init<16, 64>(device) ? gdn_path::slice64 : gdn_path::ar;
-#elif defined(GGML_USE_MUSA)
-    GGML_UNUSED_VARS(info);
-    return gdn_path::ar;
-#else
     // Enable only architectures benchmarked for this schedule. MMA support alone does not imply a speedup.
     if (!ampere_mma_available(info.cc) ||
         (info.cc != GGML_CUDA_CC_AMPERE_GA10X && info.cc != GGML_CUDA_CC_ADA_LOVELACE &&
@@ -422,7 +378,6 @@ static gdn_path select_gdn_mma_path(int device, const ggml_cuda_gdn_mma_args & a
         return init<16, 32, 2>(device) ? gdn_path::slice32_two_blocks : gdn_path::ar;
     }
     return init<16, 128>(device) ? gdn_path::whole_head : gdn_path::ar;
-#endif // GGML_USE_HIP
 }
 }  // namespace
 
@@ -434,9 +389,6 @@ bool ggml_cuda_gdn_mma_launch(int device, const ggml_cuda_gdn_mma_args & a, cuda
     if (path == gdn_path::ar) {
         return false;
     }
-#ifdef GGML_USE_HIP
-    gdn_single<16, 64><<<a.H * a.n_seqs * 2, dim3(32, 8), sizeof(shared<16, 64>), stream>>>(a);
-#else
     if (path == gdn_path::slice32_two_blocks) {
         gdn_single<16, 32, 2><<<a.H * a.n_seqs * 4, dim3(32, 8), sizeof(shared<16, 32>), stream>>>(a);
     } else if (path == gdn_path::slice32_one_block) {
@@ -444,7 +396,6 @@ bool ggml_cuda_gdn_mma_launch(int device, const ggml_cuda_gdn_mma_args & a, cuda
     } else {
         gdn_single<16, 128><<<a.H * a.n_seqs, dim3(32, 8), sizeof(shared<16, 128>), stream>>>(a);
     }
-#endif // GGML_USE_HIP
     CUDA_CHECK(cudaGetLastError());
     return true;
 }

@@ -3,7 +3,6 @@
 #include "fattn-common.cuh"
 #include "convert.cuh"
 
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 #if defined(TURING_MMA_AVAILABLE)
 
 typedef union {
@@ -234,18 +233,13 @@ static __global__ void lightning_indexer_kernel_wmma(
 }
 
 #endif // defined(TURING_MMA_AVAILABLE)
-#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 
 // tokens scored per block by the tile kernel
 #define LIGHTNING_INDEXER_TILE_TOKENS 8
 
 // heads whose queries the tile kernel stages per pass, MUSA arch 21 caps static shared memory
 // at 28 KB and the queries of four heads do not fit there next to the key tile
-#if defined(GGML_USE_MUSA) && defined(__MUSA_ARCH__) && __MUSA_ARCH__ < 220
-#define LIGHTNING_INDEXER_TILE_HEADS_PER_PASS 2
-#else
 #define LIGHTNING_INDEXER_TILE_HEADS_PER_PASS 4
-#endif
 
 // TODO there is one ugly assumption used in this kernel - that WARP_SIZE is equal to 32
 // thanks to that one warp operating on float4 processes whole indexer K/Q vectors
@@ -616,7 +610,6 @@ void ggml_cuda_lightning_indexer(ggml_backend_cuda_context & ctx, ggml_tensor * 
     const int cc     = ggml_cuda_info().devices[device].cc;
 
     if (n_embd == 128 && n_head == 64) {
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
         if (GGML_CUDA_CC_IS_NVIDIA(cc) && turing_mma_available(cc) && k->type != GGML_TYPE_F32 && k->type != GGML_TYPE_BF16) {
             // use wmma kernel
             constexpr int K_VECS_PER_BLOCK = 32;
@@ -634,9 +627,6 @@ void ggml_cuda_lightning_indexer(ggml_backend_cuda_context & ctx, ggml_tensor * 
             LIGHTNING_INDEXER_CASE(lightning_indexer_kernel_wmma, 128, 64, k, GGML_TYPE_Q8_0)
             GGML_ABORT("fatal error");
         } else {
-#else // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
-        {
-#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
             // use vector kernel
             constexpr int K_VECS_PER_WARP = 8;
             constexpr int WARPS_PER_BLOCK = 8;
@@ -657,7 +647,6 @@ void ggml_cuda_lightning_indexer(ggml_backend_cuda_context & ctx, ggml_tensor * 
             GGML_ABORT("fatal error");
         }
     } else if (n_embd == 128 && n_head == 32) {
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
         if (GGML_CUDA_CC_IS_NVIDIA(cc) && turing_mma_available(cc) && k->type != GGML_TYPE_F32 && k->type != GGML_TYPE_BF16) {
             // use wmma kernel
             constexpr int K_VECS_PER_BLOCK = 32;
@@ -675,9 +664,6 @@ void ggml_cuda_lightning_indexer(ggml_backend_cuda_context & ctx, ggml_tensor * 
             LIGHTNING_INDEXER_CASE(lightning_indexer_kernel_wmma, 128, 32, k, GGML_TYPE_Q8_0)
             GGML_ABORT("fatal error");
         } else {
-#else // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
-        {
-#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
             // use vector kernel
             constexpr int K_VECS_PER_WARP = 8;
             constexpr int WARPS_PER_BLOCK = 8;

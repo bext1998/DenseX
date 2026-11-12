@@ -263,35 +263,19 @@ static __host__ ggml_cuda_mmq_config ggml_cuda_mmq_get_config(const ggml_type ty
 }
 
 static constexpr __device__ ggml_cuda_mmq_config ggml_cuda_mmq_get_config(ggml_type type, int J, bool fallback, ggml_prec prec_src1) {
-#ifdef GGML_USE_HIP
-#ifdef GCN
-    return ggml_cuda_mmq_get_config_gcn(type, J, fallback);
-#elif defined(CDNA)
-    return ggml_cuda_mmq_get_config_cdna(type, J, fallback);
-#elif defined(RDNA4)
-    return ggml_cuda_mmq_get_config_rdna4(type, J, fallback);
-#elif defined(RDNA3_5)
-    return ggml_cuda_mmq_get_config_rdna3_5(type, J, fallback);
-#elif defined(RDNA3)
-    return ggml_cuda_mmq_get_config_rdna3(type, J, fallback);
-#else
-    return ggml_cuda_mmq_get_config_rdna2(type, J, fallback);
-#endif // CDNA
-#else
-#ifdef BLACKWELL_MMA_AVAILABLE
+#if defined(BLACKWELL_MMA_AVAILABLE)
     // only src1 at Q4 uses the native FP4 config, higher precisions keep src1 at Q8_1
     if (prec_src1 != GGML_PREC_Q4 && (type == GGML_TYPE_NVFP4 || type == GGML_TYPE_MXFP4)) {
         return ggml_cuda_mmq_get_config_ampere(type, J, fallback);
     }
     return ggml_cuda_mmq_get_config_blackwell(type, J, fallback);
-#elif !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA
+#elif __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA
     return ggml_cuda_mmq_get_config_ampere(type, J, fallback);
-#elif !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A
+#elif __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A
     return ggml_cuda_mmq_get_config_pascal_dp4a(type, J, fallback);
 #else
     return ggml_cuda_mmq_get_config_pascal_older(type, J, fallback);
-#endif // BLACKWELL_MMA_AVAILABLE
-#endif // GGML_USE_HIP
+#endif
     GGML_UNUSED_VARS(type, J, fallback, prec_src1);
 }
 
