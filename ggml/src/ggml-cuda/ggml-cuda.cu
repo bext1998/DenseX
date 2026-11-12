@@ -790,12 +790,41 @@ struct ggml_backend_cuda_buffer_context {
     void * dev_ptr = nullptr;
     std::string name;
 
+    // DenseX (issue #7): set for buffers backed by VMM instead of cudaMalloc - see
+    // ggml_backend_cuda_vmm_buffer_type() below. dev_ptr is the reserved virtual address, va_size is
+    // the range reserved by cuMemAddressReserve and mapped_size is the physical memory currently
+    // mapped into it. A cudaMalloc buffer keeps all three at their defaults.
+    bool   is_vmm      = false;
+    size_t va_size     = 0;
+    size_t mapped_size = 0;
+
     ggml_backend_cuda_buffer_context(int device, void * dev_ptr) :
         device(device), dev_ptr(dev_ptr),
         name(GGML_CUDA_NAME + std::to_string(device)) {
     }
 
     ~ggml_backend_cuda_buffer_context() {
+        if (is_vmm) {
+#if defined(GGML_USE_VMM)
+            ggml_cuda_set_device(device);
+
+            // unmap only the part that was mapped, then release the reserved range - see the note on
+            // ggml_backend_cuda_vmm_buffer_type_alloc_buffer()
+            if (cuMemUnmap((CUdeviceptr) dev_ptr, mapped_size) != CUDA_SUCCESS) {
+                GGML_LOG_ERROR("%s: device %d: cuMemUnmap(0x%llx, %zu) failed\n", __func__, device,
+                        (unsigned long long) dev_ptr, mapped_size);
+            }
+            if (cuMemAddressFree((CUdeviceptr) dev_ptr, va_size) != CUDA_SUCCESS) {
+                GGML_LOG_ERROR("%s: device %d: cuMemAddressFree(0x%llx, %zu) failed\n", __func__, device,
+                        (unsigned long long) dev_ptr, va_size);
+            }
+#else
+            // is_vmm is never set when the build has no VMM, see ggml_backend_cuda_vmm_buffer_type_alloc_buffer()
+            GGML_LOG_ERROR("%s: device %d: VMM support is disabled in this build, cannot free a VMM buffer\n", __func__, device);
+#endif // defined(GGML_USE_VMM)
+            return;
+        }
+
         CUDA_CHECK(cudaFree(dev_ptr));
     }
 };
@@ -1022,6 +1051,288 @@ ggml_backend_buffer_type_t ggml_backend_cuda_buffer_type(int device) {
     }
 
     return &ggml_backend_cuda_buffer_types[device];
+}
+
+//
+// DenseX (issue #7): persistent VMM buffers
+//
+// A VMM buffer reserves its address space once (cuMemAddressReserve) and gets its physical pages
+// explicitly (cuMemCreate + cuMemMap + cuMemSetAccess). Unlike the temporary pool
+// (ggml_cuda_pool_vmm) each buffer owns its address range and its pages: nothing is shared, nothing
+// is recycled behind its back, and the address never moves. That is what E3 needs - the plan is to
+// unmap and remap the pages under a fixed address so the tensors keep pointing at valid memory.
+// B7 only does the full-map step: everything is mapped at allocation time and unmapped when the
+// buffer is freed.
+//
+// Issue #12 measured that cuMemCreate and cuMemMap report success even when the physical memory
+// cannot be committed - only cuMemSetAccess fails (CUDA_ERROR_NOT_READY, then CUDA_ERROR_OUT_OF_MEMORY
+// on a retry) once the committed total passes what is free, and VMM has no fallback to system memory.
+// So capacity is checked against cuMemGetInfo before anything is reserved, and every failing step is
+// rolled back and reported through the return value instead of aborting: this path never uses CU_CHECK.
+//
+
+// kept out of reach of the capacity check, so that a VMM buffer cannot starve the driver, the
+// context, or the plain allocations that follow it (issue #12: ~123 MiB of the 12287 MiB is not
+// reachable through VMM on this machine even when nothing else is allocated)
+static const size_t GGML_CUDA_VMM_SAFETY_MARGIN = 1ull << 28; // 256 MB
+
+#if defined(GGML_USE_VMM)
+
+static const char * ggml_cuda_vmm_errstr(CUresult err) {
+    const char * str = "unknown error";
+    (void) cuGetErrorString(err, &str);
+    return str;
+}
+
+// undo everything ggml_cuda_vmm_alloc() did up to the point of failure
+static void ggml_cuda_vmm_rollback(int device, CUdeviceptr va_base, size_t map_size, bool mapped) {
+    if (mapped) {
+        const CUresult err = cuMemUnmap(va_base, map_size);
+        if (err != CUDA_SUCCESS) {
+            GGML_LOG_ERROR("%s: device %d: rolling back cuMemUnmap(0x%llx, %.2f MiB) failed: %s\n", __func__,
+                    device, (unsigned long long) va_base, map_size / 1024.0 / 1024.0, ggml_cuda_vmm_errstr(err));
+        }
+    }
+
+    const CUresult err = cuMemAddressFree(va_base, map_size);
+    if (err != CUDA_SUCCESS) {
+        GGML_LOG_ERROR("%s: device %d: rolling back cuMemAddressFree(0x%llx, %.2f MiB) failed: %s\n", __func__,
+                device, (unsigned long long) va_base, map_size / 1024.0 / 1024.0, ggml_cuda_vmm_errstr(err));
+    }
+}
+
+// reserve + map map_size bytes of device memory for a single buffer; returns the base address, or 0
+// with the reason logged. mapped_size is the rounded size that was mapped (buffer->size stays the
+// requested size).
+static CUdeviceptr ggml_cuda_vmm_alloc(int device, size_t size, size_t * mapped_size) {
+    *mapped_size = 0;
+
+    ggml_cuda_set_device(device);
+
+    const ggml_cuda_device_info & info = ggml_cuda_info();
+    const size_t granularity           = info.devices[device].vmm_granularity;
+    const int    physical_device       = ggml_cuda_get_physical_device(device);
+
+    if (!info.devices[device].vmm || granularity == 0) {
+        GGML_LOG_ERROR("%s: device %d does not support VMM\n", __func__, device);
+        return 0;
+    }
+
+    // round the mapped range up to the granularity, the extra bytes are simply unused
+    const size_t map_size = granularity * ((size + granularity - 1) / granularity);
+
+    size_t vram_free  = 0;
+    size_t vram_total = 0;
+    CUresult err = cuMemGetInfo(&vram_free, &vram_total);
+    if (err != CUDA_SUCCESS) {
+        GGML_LOG_ERROR("%s: device %d: cuMemGetInfo failed: %s\n", __func__, device, ggml_cuda_vmm_errstr(err));
+        return 0;
+    }
+
+    if (map_size + GGML_CUDA_VMM_SAFETY_MARGIN > vram_free) {
+        GGML_LOG_ERROR("%s: refusing to allocate %.2f MiB (mapped as %.2f MiB) on device %d: %.2f MiB of "
+                "%.2f MiB free, %.2f MiB kept as a safety margin\n", __func__,
+                size / 1024.0 / 1024.0, map_size / 1024.0 / 1024.0, device,
+                vram_free / 1024.0 / 1024.0, vram_total / 1024.0 / 1024.0,
+                GGML_CUDA_VMM_SAFETY_MARGIN / 1024.0 / 1024.0);
+        return 0;
+    }
+
+    CUdeviceptr va_base = 0;
+    err = cuMemAddressReserve(&va_base, map_size, granularity, 0, 0);
+    if (err != CUDA_SUCCESS) {
+        GGML_LOG_ERROR("%s: device %d: cuMemAddressReserve(%.2f MiB) failed: %s (%.2f MiB free)\n", __func__,
+                device, map_size / 1024.0 / 1024.0, ggml_cuda_vmm_errstr(err), vram_free / 1024.0 / 1024.0);
+        return 0;
+    }
+
+    CUmemAllocationProp prop = {};
+    prop.type          = CU_MEM_ALLOCATION_TYPE_PINNED;
+    prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    prop.location.id   = physical_device;
+
+    CUmemGenericAllocationHandle handle;
+    err = cuMemCreate(&handle, map_size, &prop, 0);
+    if (err != CUDA_SUCCESS) {
+        GGML_LOG_ERROR("%s: device %d: cuMemCreate(%.2f MiB) failed: %s (%.2f MiB free)\n", __func__,
+                device, map_size / 1024.0 / 1024.0, ggml_cuda_vmm_errstr(err), vram_free / 1024.0 / 1024.0);
+        ggml_cuda_vmm_rollback(device, va_base, map_size, /* mapped = */ false);
+        return 0;
+    }
+
+    // map at the base of the reserved range
+    err = cuMemMap(va_base, map_size, 0, handle, 0);
+    if (err != CUDA_SUCCESS) {
+        GGML_LOG_ERROR("%s: device %d: cuMemMap(0x%llx, %.2f MiB) failed: %s (%.2f MiB free)\n", __func__,
+                device, (unsigned long long) va_base, map_size / 1024.0 / 1024.0, ggml_cuda_vmm_errstr(err),
+                vram_free / 1024.0 / 1024.0);
+        (void) cuMemRelease(handle);
+        ggml_cuda_vmm_rollback(device, va_base, map_size, /* mapped = */ false);
+        return 0;
+    }
+
+    *mapped_size = map_size;
+
+    // the handle is no longer needed once the range is mapped (as in the temporary pool); issue #12
+    // found that a failed cuMemSetAccess leaves this mapped range behind, which is why the rollback
+    // below unmaps it explicitly instead of leaving it to the destructor
+    err = cuMemRelease(handle);
+    if (err != CUDA_SUCCESS) {
+        GGML_LOG_ERROR("%s: device %d: cuMemRelease after cuMemMap failed: %s\n", __func__, device,
+                ggml_cuda_vmm_errstr(err));
+        ggml_cuda_vmm_rollback(device, va_base, map_size, /* mapped = */ true);
+        *mapped_size = 0;
+        return 0;
+    }
+
+    // grant access to the physical device backing this buffer; peer access is deliberately not set up
+    // here (B7 is single-GPU) - the temporary pool does that in ggml_cuda_pool_vmm::alloc()
+    CUmemAccessDesc access = {};
+    access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    access.location.id   = physical_device;
+    access.flags         = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+
+    err = cuMemSetAccess(va_base, map_size, &access, 1);
+    if (err != CUDA_SUCCESS) {
+        size_t free_after = 0;
+        size_t total_after = 0;
+        if (cuMemGetInfo(&free_after, &total_after) != CUDA_SUCCESS) {
+            free_after = 0;
+            total_after = 0;
+        }
+        GGML_LOG_ERROR("%s: device %d: cuMemSetAccess(0x%llx, %.2f MiB) failed: %s (%.2f MiB of %.2f MiB "
+                "free before, %.2f MiB free after the failed commit)\n", __func__, device,
+                (unsigned long long) va_base, map_size / 1024.0 / 1024.0, ggml_cuda_vmm_errstr(err),
+                vram_free / 1024.0 / 1024.0, vram_total / 1024.0 / 1024.0, free_after / 1024.0 / 1024.0);
+        ggml_cuda_vmm_rollback(device, va_base, map_size, /* mapped = */ true);
+        *mapped_size = 0;
+        return 0;
+    }
+
+    size_t free_after = 0;
+    size_t total_after = 0;
+    (void) cuMemGetInfo(&free_after, &total_after);
+
+    GGML_LOG_INFO("%s: device %d: mapped %.2f MiB of VMM memory at 0x%llx (requested %.2f MiB, granularity "
+            "%zu B, free %.2f -> %.2f MiB of %.2f MiB)\n", __func__, device,
+            map_size / 1024.0 / 1024.0, (unsigned long long) va_base, size / 1024.0 / 1024.0, granularity,
+            vram_free / 1024.0 / 1024.0, free_after / 1024.0 / 1024.0, vram_total / 1024.0 / 1024.0);
+
+    return va_base;
+}
+
+#endif // defined(GGML_USE_VMM)
+
+// wrapper buffer type that only selects the allocator above. The buffers it returns report the plain
+// CUDA buffer type and the plain CUDA buffer interface, on purpose: ggml_backend_cuda_set_tensor_async
+// and friends assert that buffer->buft == ggml_backend_cuda_buffer_type(device),
+// ggml_backend_buffer_is_cuda compares buffer->iface.free_buffer, and
+// ggml_backend_cuda_device_supports_buft() compares the buffer type by name - all of that keeps
+// working because none of it ever sees this wrapper. What the caller does hold on to is this type, so
+// get_alignment / get_max_size / get_alloc_size have to answer exactly what the plain type answers or
+// the tensor layout would change.
+struct ggml_backend_cuda_vmm_buffer_type_context {
+    int device;
+    std::string name;
+};
+
+static ggml_backend_buffer_type_t ggml_backend_cuda_vmm_buffer_type_base(ggml_backend_buffer_type_t buft) {
+    ggml_backend_cuda_vmm_buffer_type_context * ctx = (ggml_backend_cuda_vmm_buffer_type_context *) buft->context;
+    return ggml_backend_cuda_buffer_type(ctx->device);
+}
+
+static const char * ggml_backend_cuda_vmm_buffer_type_get_name(ggml_backend_buffer_type_t buft) {
+    ggml_backend_cuda_vmm_buffer_type_context * ctx = (ggml_backend_cuda_vmm_buffer_type_context *) buft->context;
+
+    return ctx->name.c_str();
+}
+
+static ggml_backend_buffer_t ggml_backend_cuda_vmm_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
+    ggml_backend_buffer_type_t base_buft = ggml_backend_cuda_vmm_buffer_type_base(buft);
+    if (base_buft == nullptr) {
+        GGML_LOG_ERROR("%s: invalid device\n", __func__);
+        return nullptr;
+    }
+
+    if (size == 0) {
+        // no_alloc / fit planning asks for a placeholder buffer - keep the plain path
+        return ggml_backend_cuda_buffer_type_alloc_buffer(base_buft, size);
+    }
+
+#if !defined(GGML_USE_VMM)
+    GGML_LOG_ERROR("%s: %s: built without VMM support, cannot allocate %.2f MiB\n", __func__,
+            ggml_backend_cuda_vmm_buffer_type_get_name(buft), size / 1024.0 / 1024.0);
+    return nullptr;
+#else
+    ggml_backend_cuda_vmm_buffer_type_context * buft_ctx = (ggml_backend_cuda_vmm_buffer_type_context *) buft->context;
+
+    size_t mapped_size = 0;
+    const CUdeviceptr va_base = ggml_cuda_vmm_alloc(buft_ctx->device, size, &mapped_size);
+    if (va_base == 0) {
+        // ggml_cuda_vmm_alloc() logged the reason
+        return nullptr;
+    }
+
+    ggml_backend_cuda_buffer_context * ctx = new ggml_backend_cuda_buffer_context(buft_ctx->device, (void *) va_base);
+    ctx->is_vmm      = true;
+    ctx->va_size     = mapped_size;  // B7 maps the whole reserved range
+    ctx->mapped_size = mapped_size;
+
+    // the plain CUDA buffer type owns the buffer, see the note above
+    return ggml_backend_buffer_init(base_buft, ggml_backend_cuda_buffer_interface, ctx, size);
+#endif // !defined(GGML_USE_VMM)
+}
+
+static size_t ggml_backend_cuda_vmm_buffer_type_get_alignment(ggml_backend_buffer_type_t buft) {
+    ggml_backend_buffer_type_t base_buft = ggml_backend_cuda_vmm_buffer_type_base(buft);
+    return base_buft ? ggml_backend_buft_get_alignment(base_buft) : 128;
+}
+
+static size_t ggml_backend_cuda_vmm_buffer_type_get_max_size(ggml_backend_buffer_type_t buft) {
+    ggml_backend_buffer_type_t base_buft = ggml_backend_cuda_vmm_buffer_type_base(buft);
+    return base_buft ? ggml_backend_buft_get_max_size(base_buft) : SIZE_MAX;
+}
+
+static size_t ggml_backend_cuda_vmm_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor) {
+    ggml_backend_buffer_type_t base_buft = ggml_backend_cuda_vmm_buffer_type_base(buft);
+    return base_buft ? ggml_backend_buft_get_alloc_size(base_buft, tensor) : ggml_nbytes(tensor);
+}
+
+static const ggml_backend_buffer_type_i ggml_backend_cuda_vmm_buffer_type_interface = {
+    /* .get_name            = */ ggml_backend_cuda_vmm_buffer_type_get_name,
+    /* .alloc_buffer        = */ ggml_backend_cuda_vmm_buffer_type_alloc_buffer,
+    /* .alloc_buffer_n      = */ NULL, // falls back to alloc_buffer with the summed size
+    /* .get_alignment       = */ ggml_backend_cuda_vmm_buffer_type_get_alignment,
+    /* .get_max_size        = */ ggml_backend_cuda_vmm_buffer_type_get_max_size,
+    /* .get_alloc_size      = */ ggml_backend_cuda_vmm_buffer_type_get_alloc_size,
+    /* .get_alloc_size_n    = */ NULL,
+    /* .is_host             = */ NULL,
+};
+
+ggml_backend_buffer_type_t ggml_backend_cuda_vmm_buffer_type(int device) {
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+
+    if (device >= ggml_backend_cuda_get_device_count()) {
+        return nullptr;
+    }
+
+    static ggml_backend_buffer_type ggml_backend_cuda_vmm_buffer_types[GGML_CUDA_MAX_DEVICES];
+
+    static bool ggml_backend_cuda_vmm_buffer_type_initialized = false;
+
+    if (!ggml_backend_cuda_vmm_buffer_type_initialized) {
+        for (int i = 0; i < ggml_backend_cuda_get_device_count(); i++) {
+            ggml_backend_cuda_vmm_buffer_types[i] = {
+                /* .iface    = */ ggml_backend_cuda_vmm_buffer_type_interface,
+                /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_cuda_reg(), i),
+                /* .context  = */ new ggml_backend_cuda_vmm_buffer_type_context{i, GGML_CUDA_NAME + std::to_string(i) + "_VMM"},
+            };
+        }
+        ggml_backend_cuda_vmm_buffer_type_initialized = true;
+    }
+
+    return &ggml_backend_cuda_vmm_buffer_types[device];
 }
 
 // Communication context for multi-GPU AllReduce during tensor parallelism.
@@ -6115,6 +6426,15 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_cuda_get_features;
+    }
+    // DenseX (issue #7): the allocator for persistent VMM buffers, see
+    // ggml_backend_cuda_vmm_buffer_type() above; NULL when built with GGML_CUDA_NO_VMM
+    if (strcmp(name, "ggml_backend_cuda_vmm_buffer_type") == 0) {
+#if defined(GGML_USE_VMM)
+        return (void *)ggml_backend_cuda_vmm_buffer_type;
+#else
+        return nullptr;
+#endif // defined(GGML_USE_VMM)
     }
     return nullptr;
 }
