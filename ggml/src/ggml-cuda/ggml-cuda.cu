@@ -594,6 +594,15 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
 
 // pool with virtual memory
 #if defined(GGML_USE_VMM)
+
+// name of a CUresult, used by the VMM failure reports in this file: by the pool below (issue #29) and by
+// the persistent VMM buffers (issue #7). cu_get_error_str in common.cuh is CUDA-only, this one is not.
+static const char * ggml_cuda_vmm_errstr(CUresult err) {
+    const char * str = "unknown error";
+    (void) cuGetErrorString(err, &str);
+    return str;
+}
+
 struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
     static const size_t CUDA_POOL_VMM_MAX_SIZE = 1ull << 35; // 32 GB
 
@@ -603,9 +612,11 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
     size_t pool_used = 0;
     size_t pool_size = 0;
     size_t granularity;
-#if defined(GGML_USE_HIP)
+
+    // every segment currently mapped into the pool address range, in map order. The reclaim path added
+    // for issue #29 unmaps idle segments from the back; on HIP the destructor unmaps segment by segment
+    // as well (https://github.com/ROCm/ROCR-Runtime/issues/285).
     std::vector<std::pair<CUdeviceptr, size_t>> mappings;
-#endif
 
     explicit ggml_cuda_pool_vmm(int device) :
         device(device),
@@ -627,26 +638,157 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
         }
     }
 
-    void * alloc(size_t size, size_t * actual_size) override {
-        // round up the allocation size to the alignment to ensure that all allocations are aligned for all data types
-        const size_t alignment = 128;
-        size = alignment * ((size + alignment - 1) / alignment);
+    // Bytes of physical memory the pool still has to map to serve an allocation of size bytes (size is
+    // already aligned). 0 means the mapped part is enough and no driver call is needed.
+    size_t reserve_for(size_t size) const {
+        const size_t avail = pool_size - pool_used;
+        if (size <= avail) {
+            return 0;
+        }
+        const size_t need = size - avail;
+        return granularity * ((need + granularity - 1) / granularity);
+    }
 
-        size_t avail = pool_size - pool_used;
+    // What the driver reports as free; SIZE_MAX when the query itself fails, so that a capacity
+    // pre-check can never refuse based on a failed query.
+    size_t vram_free() const {
+        ggml_cuda_set_device(device);
+        size_t mem_free  = 0;
+        size_t mem_total = 0;
+        if (cuMemGetInfo(&mem_free, &mem_total) != CUDA_SUCCESS) {
+            return SIZE_MAX;
+        }
+        return mem_free;
+    }
 
-        if (size > avail) {
-            // round up to the next multiple of the granularity
-            size_t reserve_size = size - avail;
-            reserve_size = granularity * ((reserve_size + granularity - 1) / granularity);
+    // Issue #29: hand the part of the pool that holds nothing back to the driver. This is the VMM
+    // counterpart of the clear_pool() the legacy pool does when an allocation fails.
+    //
+    // The pool hands memory out as a stack and free() asserts that allocations come back in reverse
+    // order, so every byte at or above the used watermark is idle. The segments are walked from the
+    // back and the walk stops at the first segment that reaches below the watermark: pool_size only
+    // shrinks from the end, which keeps the mapped range contiguous and pool_size equal to the length
+    // that is actually mapped - the destructor unmaps exactly [pool_addr, pool_addr + pool_size).
+    size_t reclaim_idle() {
+        size_t reclaimed = 0;
 
-            GGML_ASSERT(pool_size + reserve_size <= CUDA_POOL_VMM_MAX_SIZE);
+        while (!mappings.empty()) {
+            const CUdeviceptr addr = mappings.back().first;
+            const size_t      len  = mappings.back().second;
 
+            if ((size_t) ((char *) addr - (char *) pool_addr) < pool_used) {
+                break;
+            }
+
+            const CUresult err = cuMemUnmap(addr, len);
+            if (err != CUDA_SUCCESS) {
+                GGML_LOG_ERROR("%s: pool[%d]: returning the idle segment at 0x%llx (%.2f MiB) to the driver failed: %s\n",
+                        __func__, device, (unsigned long long) addr, len / 1024.0 / 1024.0, ggml_cuda_vmm_errstr(err));
+                break;
+            }
+
+            mappings.pop_back();
+            pool_size -= len;
+            reclaimed += len;
+        }
+
+        return reclaimed;
+    }
+
+    // Grant access to a freshly mapped range. This is the step that actually commits the physical
+    // pages: issue #12 measured that cuMemCreate and cuMemMap report success without committing any,
+    // and that cuMemSetAccess is the one that fails when the memory is not there.
+    CUresult pool_vmm_set_access(CUdeviceptr start_ptr, size_t reserve_size) const {
+        // VMM Bug fix for P2P access if GGML_CUDA_P2P is set, or if NCCL build
+        bool use_peer_access = ggml_cuda_p2p_enabled();
+#if defined(GGML_USE_NCCL)
+        use_peer_access = true;
+#endif // defined(GGML_USE_NCCL)
+
+        if (!use_peer_access) {
+            // set access for non P2P
+            CUmemAccessDesc access = {};
+            access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+            access.location.id = physical_device;
+            access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+            return cuMemSetAccess(start_ptr, reserve_size, &access, 1);
+        }
+
+        // NCCL implicitly enables peer access (cudaDeviceEnablePeerAccess), and
+        // GGML_CUDA_P2P enables it explicitly. Unlike cudaMalloc buffers, VMM
+        // allocations do not become peer-accessible from that alone, so access
+        // must be granted explicitly here. With virtual devices, grant access
+        // on the backing *physical* devices (deduplicated, since several
+        // virtual devices can map to the same physical GPU).
+        std::vector<CUmemAccessDesc> access_descs;
+        bool physical_seen[GGML_CUDA_MAX_DEVICES] = {};
+        const int device_count = ggml_cuda_info().device_count;
+        for (int id = 0; id < device_count; ++id) {
+            const int id_physical = ggml_cuda_get_physical_device(id);
+            if (id_physical != physical_device) {
+                int can_access_peer = 0;
+                CUDA_CHECK(cudaDeviceCanAccessPeer(&can_access_peer, id_physical, physical_device));
+                if (!can_access_peer) {
+                    continue;
+                }
+            }
+            if (physical_seen[id_physical]) {
+                continue;
+            }
+            physical_seen[id_physical] = true;
+            CUmemAccessDesc access = {};
+            access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+            access.location.id = id_physical;
+            access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+            access_descs.push_back(access);
+        }
+
+        return cuMemSetAccess(start_ptr, reserve_size, access_descs.data(), access_descs.size());
+    }
+
+    // Map enough physical memory for an aligned allocation of size bytes.
+    //
+    // With DENSEX_CUDA_POOL_RECLAIM=1 (issue #29) the capacity is first checked against the driver: if
+    // the new pages do not fit, the idle segments are returned and the requirement is recomputed, then
+    // the steps run without CU_CHECK and a failing step is rolled back and reported before aborting.
+    // With the switch off none of that runs: the pre-check, the reclaim and the reporting are all
+    // behind the flag and the steps below are the original CU_CHECK sequence.
+    void grow(size_t size) {
+        size_t reserve_size = reserve_for(size);
+        if (reserve_size == 0) {
+            return;
+        }
+        GGML_ASSERT(pool_size + reserve_size <= CUDA_POOL_VMM_MAX_SIZE);
+
+        const bool reclaim = ggml_cuda_env_flag("DENSEX_CUDA_POOL_RECLAIM");
+
+        if (reclaim) {
+            size_t mem_free = vram_free();
+            if (reserve_size > mem_free) {
+                const size_t free_before    = mem_free;
+                const size_t reserve_before = reserve_size;
+                const size_t reclaimed      = reclaim_idle();
+                if (reclaimed > 0) {
+                    reserve_size = reserve_for(size);
+                    GGML_ASSERT(pool_size + reserve_size <= CUDA_POOL_VMM_MAX_SIZE);
+                    mem_free = vram_free();
+                    GGML_LOG_INFO("%s: pool[%d]: %.2f MiB of new pages does not fit in %.2f MiB free: returned %.2f MiB of idle segments to the driver (pool_size %.2f MiB, pool_used %.2f MiB), %.2f MiB free after the retry, now needs %.2f MiB\n",
+                            __func__, device,
+                            reserve_before / 1024.0 / 1024.0, free_before / 1024.0 / 1024.0,
+                            reclaimed / 1024.0 / 1024.0, pool_size / 1024.0 / 1024.0, pool_used / 1024.0 / 1024.0,
+                            mem_free / 1024.0 / 1024.0, reserve_size / 1024.0 / 1024.0);
+                }
+            }
+        }
+
+        CUmemAllocationProp prop = {};
+        prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+        prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+        prop.location.id = physical_device;
+        CUmemGenericAllocationHandle handle;
+
+        if (!reclaim) {
             // allocate more physical memory
-            CUmemAllocationProp prop = {};
-            prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-            prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-            prop.location.id = physical_device;
-            CUmemGenericAllocationHandle handle;
             CU_CHECK(cuMemCreate(&handle, reserve_size, &prop, 0));
 
             // reserve virtual address space (if not already reserved)
@@ -655,66 +797,99 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
             }
 
             // map at the end of the pool
-            CUdeviceptr start_ptr = (CUdeviceptr)((char *)(pool_addr) + pool_size);
+            const CUdeviceptr start_ptr = (CUdeviceptr)((char *)(pool_addr) + pool_size);
             CU_CHECK(cuMemMap(start_ptr, reserve_size, 0, handle, 0));
-#if defined(GGML_USE_HIP)
             mappings.push_back({start_ptr, reserve_size});
-#endif
 
             // the memory allocation handle is no longer needed after mapping
             CU_CHECK(cuMemRelease(handle));
 
-            // VMM Bug fix for P2P access if GGML_CUDA_P2P is set, or if NCCL build
-            bool use_peer_access = ggml_cuda_p2p_enabled();
-#if defined(GGML_USE_NCCL)
-            use_peer_access = true;
-#endif // defined(GGML_USE_NCCL)
+            CU_CHECK(pool_vmm_set_access(start_ptr, reserve_size));
 
-            if (use_peer_access) {
-                // NCCL implicitly enables peer access (cudaDeviceEnablePeerAccess), and
-                // GGML_CUDA_P2P enables it explicitly. Unlike cudaMalloc buffers, VMM
-                // allocations do not become peer-accessible from that alone, so access
-                // must be granted explicitly here. With virtual devices, grant access
-                // on the backing *physical* devices (deduplicated, since several
-                // virtual devices can map to the same physical GPU).
-                std::vector<CUmemAccessDesc> access_descs;
-                bool physical_seen[GGML_CUDA_MAX_DEVICES] = {};
-                const int device_count = ggml_cuda_info().device_count;
-                for (int id = 0; id < device_count; ++id) {
-                    const int id_physical = ggml_cuda_get_physical_device(id);
-                    if (id_physical != physical_device) {
-                        int can_access_peer = 0;
-                        CUDA_CHECK(cudaDeviceCanAccessPeer(&can_access_peer, id_physical, physical_device));
-                        if (!can_access_peer) {
-                            continue;
-                        }
-                    }
-                    if (physical_seen[id_physical]) {
-                        continue;
-                    }
-                    physical_seen[id_physical] = true;
-                    CUmemAccessDesc access = {};
-                    access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-                    access.location.id = id_physical;
-                    access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-                    access_descs.push_back(access);
+        } else {
+            const char * step      = "cuMemCreate";
+            CUresult     err       = cuMemCreate(&handle, reserve_size, &prop, 0);
+            CUdeviceptr  start_ptr = 0;
+            bool         has_handle = err == CUDA_SUCCESS;
+            bool         mapped     = false;
+
+            if (has_handle && pool_addr == 0) {
+                step = "cuMemAddressReserve";
+                err = cuMemAddressReserve(&pool_addr, CUDA_POOL_VMM_MAX_SIZE, 0, 0, 0);
+            }
+            if (err == CUDA_SUCCESS) {
+                // map at the end of the pool
+                step = "cuMemMap";
+                start_ptr = (CUdeviceptr)((char *)(pool_addr) + pool_size);
+                err = cuMemMap(start_ptr, reserve_size, 0, handle, 0);
+                if (err == CUDA_SUCCESS) {
+                    mapped = true;
+                    mappings.push_back({start_ptr, reserve_size});
                 }
-                CU_CHECK(cuMemSetAccess(start_ptr, reserve_size, access_descs.data(), access_descs.size()));
-            } else {
-                // set access for non P2P
-                CUmemAccessDesc access = {};
-                access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-                access.location.id = physical_device;
-                access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-                CU_CHECK(cuMemSetAccess(start_ptr, reserve_size, &access, 1));
+            }
+            if (err == CUDA_SUCCESS) {
+                // the memory allocation handle is no longer needed after mapping
+                step = "cuMemRelease";
+                err = cuMemRelease(handle);
+                has_handle = false;
+            }
+            if (err == CUDA_SUCCESS) {
+                step = "cuMemSetAccess";
+                err = pool_vmm_set_access(start_ptr, reserve_size);
             }
 
-            // add to the pool
-            pool_size += reserve_size;
+            if (err != CUDA_SUCCESS) {
+                size_t mem_free  = 0;
+                size_t mem_total = 0;
+                if (cuMemGetInfo(&mem_free, &mem_total) != CUDA_SUCCESS) {
+                    mem_free  = 0;
+                    mem_total = 0;
+                }
+                GGML_LOG_ERROR("%s: pool[%d]: %s failed while growing the pool by %.2f MiB for an allocation of %.2f MiB "
+                        "(pool_size %.2f MiB, pool_used %.2f MiB, %.2f of %.2f MiB free): %d %s\n",
+                        __func__, device, step,
+                        reserve_size / 1024.0 / 1024.0, size / 1024.0 / 1024.0,
+                        pool_size / 1024.0 / 1024.0, pool_used / 1024.0 / 1024.0,
+                        mem_free / 1024.0 / 1024.0, mem_total / 1024.0 / 1024.0,
+                        (int) err, ggml_cuda_vmm_errstr(err));
 
-            //printf("cuda pool[%d]: size increased to %llu MB (reserved %llu MB)\n",
-            //       device, (unsigned long long) (pool_size/1024/1024),
-            //       (unsigned long long) (reserve_size/1024/1024));
+                // undo this grow(): pool_size never moved, so the mapping that just failed is the one
+                // at the back of the list and the destructor still unmaps only what is really mapped
+                if (mapped) {
+                    const CUresult unmap_err = cuMemUnmap(start_ptr, reserve_size);
+                    if (unmap_err != CUDA_SUCCESS) {
+                        GGML_LOG_ERROR("%s: pool[%d]: rollback: cuMemUnmap(0x%llx, %.2f MiB) failed: %s\n",
+                                __func__, device, (unsigned long long) start_ptr, reserve_size / 1024.0 / 1024.0,
+                                ggml_cuda_vmm_errstr(unmap_err));
+                    }
+                    mappings.pop_back();
+                }
+                if (has_handle) {
+                    const CUresult release_err = cuMemRelease(handle);
+                    if (release_err != CUDA_SUCCESS) {
+                        GGML_LOG_ERROR("%s: pool[%d]: rollback: cuMemRelease failed: %s\n",
+                                __func__, device, ggml_cuda_vmm_errstr(release_err));
+                    }
+                }
+
+                GGML_ABORT("CUDA VMM pool out of memory");
+            }
+        }
+
+        // add to the pool
+        pool_size += reserve_size;
+
+        //printf("cuda pool[%d]: size increased to %llu MB (reserved %llu MB)\n",
+        //       device, (unsigned long long) (pool_size/1024/1024), (unsigned long long) (reserve_size/1024/1024));
+    }
+
+    void * alloc(size_t size, size_t * actual_size) override {
+        // round up the allocation size to the alignment to ensure that all allocations are aligned for all data types
+        const size_t alignment = 128;
+        size = alignment * ((size + alignment - 1) / alignment);
+
+        if (size > pool_size - pool_used) {
+            grow(size);
         }
 
         GGML_ASSERT(pool_addr != 0);
@@ -1073,11 +1248,7 @@ ggml_backend_buffer_type_t ggml_backend_cuda_buffer_type(int device) {
 
 #if defined(GGML_USE_VMM)
 
-static const char * ggml_cuda_vmm_errstr(CUresult err) {
-    const char * str = "unknown error";
-    (void) cuGetErrorString(err, &str);
-    return str;
-}
+// ggml_cuda_vmm_errstr() is defined above, next to the VMM pool
 
 // undo everything ggml_cuda_vmm_alloc() did up to the point of failure
 static void ggml_cuda_vmm_rollback(int device, CUdeviceptr va_base, size_t map_size, bool mapped) {
