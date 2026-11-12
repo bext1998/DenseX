@@ -9,6 +9,9 @@ param([string]$Target = 'llama-server', [string]$Arch = '86', [int]$Jobs = 6, [s
       [string]$CudaPath = 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0', [string]$Src = '', [string]$BuildRoot = '')
 $ErrorActionPreference = 'Stop'
 $src = if ($Src) { $Src } else { (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path }
+# A checkout inside the research workspace (a build.ps1 wrapper next to it) builds into the workspace's build root only;
+# building here by default left a stray <repo>/build tree that later runs picked up by mistake.
+if (!$BuildRoot -and (Test-Path (Join-Path $src '../build.ps1'))) { throw "use $(Resolve-Path (Join-Path $src '../build.ps1')) (or pass -BuildRoot)" }
 $root = if ($BuildRoot) { $BuildRoot } else { Join-Path $src 'build' }
 $build = Join-Path $root ($(if ($Name) { $Name } else { 'sm' + ($Arch -replace ';', '-') }))
 New-Item -ItemType Directory -Force $root | Out-Null
