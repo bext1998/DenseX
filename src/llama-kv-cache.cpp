@@ -387,6 +387,11 @@ llama_kv_cache::llama_kv_cache(
         }
     }
 
+    // the storage computes every view, byte range and set_rows row with its own cell count (issue #5) - it has to be
+    // the count the cells were allocated with, or the graph views and the session state data would run past the
+    // tensors; a shared cache already took the size of the source cache above
+    GGML_ASSERT(get_size() == storage.get_kv_size());
+
     const char * LLAMA_KV_CACHE_DEBUG = getenv("LLAMA_KV_CACHE_DEBUG");
     debug = LLAMA_KV_CACHE_DEBUG ? atoi(LLAMA_KV_CACHE_DEBUG) : 0;
 }
@@ -869,6 +874,9 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
 
             res->reset();
 
+            // the shift graph reads and rewrites every cell of every stream (issue #5)
+            prepare_access_shift();
+
             auto * gf = build_graph_shift(res, lctx);
             if (!ggml_backend_sched_alloc_graph(sched, gf)) {
                 LLAMA_LOG_ERROR("%s: failed to allocate compute graph for K-shift\n", __func__);
@@ -1275,56 +1283,74 @@ uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
     return result;
 }
 
+std::vector<llama_kv_storage::access> llama_kv_cache::get_access(const slot_info & sinfo, uint32_t n_kv) const {
+    std::vector<llama_kv_storage::access> res;
+
+    // the graph reads [0, n_kv) of every stream it spans, padding and holes included (see the views of get_k /
+    // get_v) - the same cells in every layer
+    for (uint32_t s = sinfo.s0; s <= sinfo.s1; ++s) {
+        if (n_kv > 0) {
+            res.push_back({ s, { 0, n_kv }, false });
+        }
+    }
+
+    // the graph writes the cells the ubatch was placed in (the idxs of set_input_k_idxs / set_input_v_idxs);
+    // consecutive cells are merged into one range
+    for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {
+        std::vector<uint32_t> cells = sinfo.idxs[s];
+
+        std::sort(cells.begin(), cells.end());
+
+        uint32_t it = 0;
+        while (it < cells.size()) {
+            const uint32_t start = cells[it];
+            uint32_t       end   = start + 1;
+
+            while (it + 1 < cells.size() && cells[it + 1] == end) {
+                ++it;
+                ++end;
+            }
+
+            res.push_back({ (uint32_t) sinfo.strm[s], { start, end }, true });
+
+            ++it;
+        }
+    }
+
+    return res;
+}
+
+std::vector<llama_kv_storage::access> llama_kv_cache::get_access_shift() const {
+    std::vector<llama_kv_storage::access> res;
+
+    res.reserve(n_stream);
+
+    // view_k_rope spans kv_size*n_stream cells of every layer - the whole K of every stream, in place
+    for (uint32_t s = 0; s < n_stream; ++s) {
+        res.push_back({ s, { 0, get_size() }, true });
+    }
+
+    return res;
+}
+
+void llama_kv_cache::prepare_access(const slot_info & sinfo, uint32_t n_kv) const {
+    storage.prepare(get_access(sinfo, n_kv));
+}
+
+void llama_kv_cache::prepare_access_shift() const {
+    storage.prepare(get_access_shift());
+}
+
 ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const {
     const int32_t ikv = map_layer_ids.at(il);
 
-    auto * k = storage.layers[ikv].k;
-
-    const uint64_t kv_size      = get_size();
-    const uint64_t n_embd_k_gqa = k->ne[0];
-
-    assert(n_embd_k_gqa == hparams.n_embd_k_gqa(il));
-
-    const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
-
-    return ggml_view_4d(ctx, k,
-            hparams.n_embd_head_k(il), hparams.n_head_kv(il), n_kv, ns,
-            ggml_row_size(k->type, hparams.n_embd_head_k(il)),
-            ggml_row_size(k->type, n_embd_k_gqa),
-            ggml_row_size(k->type, n_embd_k_gqa*kv_size),
-            ggml_row_size(k->type, n_embd_k_gqa*kv_size)*sinfo.s0);
+    return storage.view_k(ctx, ikv, n_kv, sinfo.s0, sinfo.s1 - sinfo.s0 + 1);
 }
 
 ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const {
     const int32_t ikv = map_layer_ids.at(il);
 
-    auto * v = storage.layers[ikv].v;
-
-    const uint64_t kv_size      = get_size();
-    const uint64_t n_embd_v_gqa = v->ne[0];
-
-    // [TAG_V_CACHE_VARIABLE]
-    assert(n_embd_v_gqa >= hparams.n_embd_v_gqa(il));
-
-    const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
-
-    if (!v_trans) {
-        // note: v->nb[1] <= v->nb[2]
-        return ggml_view_4d(ctx, v,
-                hparams.n_embd_head_v(il), hparams.n_head_kv(il), n_kv, ns,
-                ggml_row_size(v->type, hparams.n_embd_head_v(il)),          // v->nb[1]
-                ggml_row_size(v->type, n_embd_v_gqa),                   // v->nb[2]
-                ggml_row_size(v->type, n_embd_v_gqa*kv_size),           // v->nb[3]
-                ggml_row_size(v->type, n_embd_v_gqa*kv_size)*sinfo.s0);
-    }
-
-    // note: v->nb[1] > v->nb[2]
-    return ggml_view_4d(ctx, v,
-            n_kv, hparams.n_head_kv(il), hparams.n_embd_head_v(il), ns,
-            ggml_row_size(v->type, kv_size*hparams.n_embd_head_v(il)),  // v->nb[1]
-            ggml_row_size(v->type, kv_size),                        // v->nb[2]
-            ggml_row_size(v->type, kv_size*n_embd_v_gqa),           // v->nb[3]
-            ggml_row_size(v->type, kv_size*n_embd_v_gqa)*sinfo.s0);
+    return storage.view_v(ctx, ikv, n_kv, sinfo.s0, sinfo.s1 - sinfo.s0 + 1);
 }
 
 ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const {
@@ -1332,34 +1358,7 @@ ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggm
 
     const int32_t ikv = map_layer_ids.at(il);
 
-    ggml_tensor * k = storage.layers[ikv].k;
-
-    const int64_t n_embd_head = k_cur->ne[0];
-    const int64_t n_head      = k_cur->ne[1];
-    const int64_t n_tokens    = k_cur->ne[2];
-
-    const int64_t n_embd_gqa = n_embd_head*n_head;
-
-    // we can merge dims 0 and 1
-    // TODO: add ggml helper function for this?
-    GGML_ASSERT(ggml_row_size(k_cur->type, n_embd_head) == k_cur->nb[1]);
-
-    k_cur = ggml_view_2d(ctx, k_cur, n_embd_gqa, n_tokens, k_cur->nb[2], 0);
-
-    const int64_t n_stream = k->ne[2];
-
-    if (n_stream > 1) {
-        const int64_t kv_size = get_size();
-
-        assert(n_embd_gqa == k->ne[0]);
-        assert(kv_size    == k->ne[1]);
-
-        // merge the buffer across all streams because the idxs are global
-        k = ggml_reshape_2d(ctx, k, n_embd_gqa, kv_size*n_stream);
-    }
-
-    // store the current K values into the cache
-    return ggml_set_rows(ctx, k, k_cur, k_idxs);
+    return storage.set_rows_k(ctx, ikv, k_cur, k_idxs);
 }
 
 ggml_tensor * llama_kv_cache::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il, const slot_info & sinfo) const {
@@ -1367,55 +1366,7 @@ ggml_tensor * llama_kv_cache::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggm
 
     const int32_t ikv = map_layer_ids.at(il);
 
-    auto * v = storage.layers[ikv].v;
-
-    const int64_t n_embd_head = v_cur->ne[0];
-    const int64_t n_head      = v_cur->ne[1];
-    const int64_t n_tokens    = v_cur->ne[2];
-
-    const int64_t n_embd_gqa = n_embd_head*n_head;
-
-    // we can merge dims 0 and 1
-    GGML_ASSERT(ggml_row_size(v_cur->type, n_embd_head) == v_cur->nb[1]);
-
-    const int64_t n_stream = v->ne[2];
-
-    // take this branch when FA is enabled (the V cache is not transposed)
-    if (!v_trans) {
-        v_cur = ggml_view_2d(ctx, v_cur, n_embd_gqa, n_tokens, v_cur->nb[2], 0);
-
-        if (n_stream > 1) {
-            const int64_t kv_size = get_size();
-
-            assert(n_embd_gqa == v->ne[0]);
-            assert(kv_size    == v->ne[1]);
-
-            // merge the buffer across all streams because the idxs are global
-            v = ggml_reshape_2d(ctx, v, n_embd_gqa, kv_size*n_stream);
-        }
-
-        return ggml_set_rows(ctx, v, v_cur, v_idxs);
-    }
-
-    if (ggml_row_size(v_cur->type, n_embd_gqa) == v_cur->nb[2]) {
-        // we can merge dims 0, 1 and 2
-        v_cur = ggml_reshape_2d(ctx, v_cur, n_embd_gqa, n_tokens);
-    } else {
-        // otherwise -> make a copy to get contiguous data
-        v_cur = ggml_cont_2d   (ctx, v_cur, n_embd_gqa, n_tokens);
-    }
-
-    // [TAG_V_CACHE_VARIABLE]
-    if (n_embd_gqa < v->ne[0]) {
-        v_cur = ggml_pad(ctx, v_cur, v->ne[0] - n_embd_gqa, 0, 0, 0);
-    }
-
-    // in this branch the v_idxs are constructed in such a way that each row is a single head element
-    ggml_tensor * v_view = ggml_reshape_2d(ctx, v, 1, ggml_nelements(v));
-
-    v_cur = ggml_reshape_2d(ctx, v_cur, 1, ggml_nelements(v_cur));
-
-    return ggml_set_rows(ctx, v_view, v_cur, v_idxs);
+    return storage.set_rows_v(ctx, ikv, v_cur, v_idxs);
 }
 
 ggml_tensor * llama_kv_cache::build_input_k_idxs(ggml_context * ctx, const llama_ubatch & ubatch) const {
@@ -1478,10 +1429,8 @@ void llama_kv_cache::set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ub
     int64_t * data = (int64_t *) dst->data;
 
     for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {
-        const int64_t offs = sinfo.strm[s]*get_size();
-
         for (uint32_t i = 0; i < sinfo.size(); ++i) {
-            data[s*sinfo.size() + i] = offs + sinfo.idxs[s][i];
+            data[s*sinfo.size() + i] = storage.k_row(sinfo.strm[s], sinfo.idxs[s][i]);
         }
     }
 }
@@ -1495,24 +1444,19 @@ void llama_kv_cache::set_input_v_idxs(ggml_tensor * dst, const llama_ubatch * ub
 
     if (!v_trans) {
         for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {
-            const int64_t offs = sinfo.strm[s]*get_size();
-
             for (uint32_t i = 0; i < sinfo.size(); ++i) {
-                data[s*sinfo.size() + i] = offs + sinfo.idxs[s][i];
+                data[s*sinfo.size() + i] = storage.v_row(sinfo.strm[s], sinfo.idxs[s][i], 0, 0);
             }
         }
     } else {
         // note: the V cache is transposed when not using flash attention
-        const int64_t kv_size = get_size();
-
         const int64_t n_embd_v_gqa = hparams.n_embd_v_gqa_max();
 
         for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {
-            const int64_t offs = sinfo.strm[s]*kv_size*n_embd_v_gqa;
-
             for (uint32_t i = 0; i < sinfo.size(); ++i) {
                 for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {
-                    data[s*sinfo.size()*n_embd_v_gqa + i*n_embd_v_gqa + j] = offs + j*kv_size + sinfo.idxs[s][i];
+                    data[s*sinfo.size()*n_embd_v_gqa + i*n_embd_v_gqa + j] =
+                        storage.v_row(sinfo.strm[s], sinfo.idxs[s][i], j, n_embd_v_gqa);
                 }
             }
         }
@@ -2004,31 +1948,22 @@ ggml_cgraph * llama_kv_cache::build_graph_shift(llm_graph_result * res, llama_co
 
     const auto & cparams = lctx->get_cparams();
 
-    for (const auto & layer : storage.layers) {
-        const uint32_t il = layer.il;
+    for (uint32_t ikv = 0; ikv < storage.layers.size(); ++ikv) {
+        const uint32_t il = storage.layers[ikv].il;
 
         if (!hparams.has_rope(il)) {
             continue;
         }
 
-        const int64_t n_head_kv    = hparams.n_head_kv(il);
-        const int64_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);
-
-        const auto n_rot         = hparams.n_rot(il);
-        const auto n_embd_head_k = hparams.n_embd_head_k(il);
-        const auto n_embd_nope   = hparams.n_lora_kv > 0 ? n_embd_head_k - n_rot : 0;
+        const auto n_rot       = hparams.n_rot(il);
+        const auto n_embd_nope = hparams.n_lora_kv > 0 ? hparams.n_embd_head_k(il) - n_rot : 0;
 
         const float freq_base_l  = model.get_rope_freq_base (cparams, il);
         const float freq_scale_l = model.get_rope_freq_scale(cparams, il);
 
         ggml_tensor * rope_factors = model.get_rope_factors(cparams, il);
 
-        ggml_tensor * k =
-            ggml_view_3d(ctx, layer.k,
-                n_rot, n_head_kv, get_size()*n_stream,
-                ggml_row_size(layer.k->type, n_embd_head_k),
-                ggml_row_size(layer.k->type, n_embd_k_gqa),
-                ggml_row_size(layer.k->type, n_embd_nope));
+        ggml_tensor * k = storage.view_k_rope(ctx, ikv, n_rot, n_embd_nope);
 
         ggml_tensor * cur = build_rope_shift(cparams, ctx, k, inp->k_shift, inp->k_rot, rope_factors, freq_base_l, freq_scale_l, il);
 
@@ -2713,6 +2648,9 @@ bool llama_kv_cache_context::apply() {
 
     kv->apply_ubatch(sinfos[i_cur], ubatches[i_cur]);
     n_kv = kv->get_n_kv(sinfos[i_cur]);
+
+    // tell the storage what this execution touches - also when the graph is reused (issue #5)
+    kv->prepare_access(sinfos[i_cur], n_kv);
 
     return true;
 }

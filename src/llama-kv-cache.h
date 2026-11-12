@@ -199,8 +199,24 @@ public:
     ggml_tensor * get_v(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
 
     // store k_cur and v_cur in the cache based on the provided head location
+    // the strides and the byte layout of all of the above are the storage's (issue #5)
     ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const;
     ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il, const slot_info & sinfo) const;
+
+    // what an execution of this cache touches, as cells of each stream - the same cells for every layer
+    //   reads: cells [0, n_kv) of every stream the ubatch spans, padding and holes included, like the views above
+    //   writes: the cells of sinfo.idxs, consecutive cells merged into one range
+    // used by llama_kv_cache_context::apply() below, and by tests that check the contract against the graph
+    std::vector<llama_kv_storage::access> get_access(const slot_info & sinfo, uint32_t n_kv) const;
+
+    // the K-shift of build_graph_shift: every cell of every stream, read and rewritten in place
+    std::vector<llama_kv_storage::access> get_access_shift() const;
+
+    // hand those accesses to the storage, which checks that they are within its cell count; with a lazily mapped
+    // backing (E3) it maps them here. called before each execution that touches the K/V data (apply, the K-shift),
+    // never while planning a graph
+    void prepare_access(const slot_info & sinfo, uint32_t n_kv) const;
+    void prepare_access_shift() const;
 
     //
     // preparation API
