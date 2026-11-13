@@ -18,7 +18,7 @@ test('DenseX sections preserve chat navigation and identify unavailable pages', 
 
 		if (name === '總覽' || name === '硬體') {
 			await expect(page.getByText('遙測未啟用', { exact: true })).toBeVisible();
-		} else {
+		} else if (name !== 'API 連線') {
 			await expect(page.getByText('尚未提供', { exact: true })).toBeVisible();
 		}
 

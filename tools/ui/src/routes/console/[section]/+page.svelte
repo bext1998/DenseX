@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Connections from './Connections.svelte';
 	import { page } from '$app/state';
 	import { ApiError, apiFetch } from '$lib/utils/api-fetch';
 
@@ -235,7 +236,8 @@
 <main class="mx-auto max-w-4xl px-6 pt-24 pb-12 md:pt-12">
 	<h1 class="text-2xl font-semibold">{title}</h1>
 
-	{#if !monitored}<p class="mt-4 text-muted-foreground">尚未提供</p>
+	{#if section === 'connections'}<Connections />
+	{:else if !monitored}<p class="mt-4 text-muted-foreground">尚未提供</p>
 	{:else}
 		{#if status === 'disabled'}<div class="mt-4">
 				<p>遙測未啟用</p>
