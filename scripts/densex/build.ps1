@@ -1,4 +1,4 @@
-# Build DenseX (Windows, MSVC + CUDA, Ninja, static, CUDA FA for all KV quant types).
+# Build DenseX (Windows, MSVC + CUDA, Ninja, static, CUDA FA for the K/V types DenseX actually runs).
 # usage: pwsh -File scripts/densex/build.ps1 [-Target llama-server] [-Arch 86] [-Jobs 6] [-Name sm86] [-Concurrent] [-Tests]
 #        [-Src <checkout>] [-BuildRoot <dir>] [-UI]
 # Writes <BuildRoot, default <repo>/build>/<Name, default sm<Arch>>/bin/<target>.exe and appends a BUILD_INFO.txt line
@@ -42,10 +42,18 @@ try {
     Log "build dir: $build; concurrent: $Concurrent"
     Log "UI source build: $UI; prebuilt download: off; when UI is off, existing source/build dist assets may still be embedded"
     Log "commit: $(git -C $src rev-parse HEAD); dirty files: $((git -C $src status --short) -join ', ')"
+    # FlashAttention vector-kernel K-V pairs DenseX runs (issue #62). Keep this in step with the presets, or a
+    # missing pair silently converts K/V to f16 at runtime (fattn.cu logs "no FlashAttention vector kernel compiled"):
+    #   q4_0-q4_0  formal 120K preset and the 4K regress run (bench\regress.ps1, docs/densex/USAGE.md)
+    #   q8_0-q8_0  MTP draft cache (--spec-draft-type-k/v q8_0, measure.py default for a q4_0 main KV) and the
+    #              q8_0/q8_0 KLD + prefill runs (bench\run_e0.ps1, run_s0.ps1, run_n2.ps1)
+    #   q8_0-q4_0  K8V4 experiments (bench\run_a6/a7/v1-v7, run_gdnd.ps1, run_n2.ps1, NOTES.md)
+    #   f16-f16    f16 KV runs and the fallback target; ggml/cmake/common.cmake always adds it anyway
+    $faQuants = 'f16-f16;q4_0-q4_0;q8_0-q4_0;q8_0-q8_0'
     $configure = @('-S', $src, '-B', $build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
         '-DCMAKE_C_COMPILER=cl.exe', '-DCMAKE_CXX_COMPILER=cl.exe',
         "-DCMAKE_CUDA_COMPILER=$CudaPath/bin/nvcc.exe", "-DCUDAToolkit_ROOT=$CudaPath",
-        "-DCMAKE_CUDA_ARCHITECTURES=$Arch", '-DGGML_CUDA=ON', '-DGGML_CUDA_FA_QUANTS=all',
+        "-DCMAKE_CUDA_ARCHITECTURES=$Arch", '-DGGML_CUDA=ON', "-DGGML_CUDA_FA_QUANTS=$faQuants",
         '-DBUILD_SHARED_LIBS=OFF', $(if ($UI) { '-DLLAMA_BUILD_UI=ON' } else { '-DLLAMA_BUILD_UI=OFF' }), '-DLLAMA_USE_PREBUILT_UI=OFF',
         '-DLLAMA_LLGUIDANCE=OFF', '-DFETCHCONTENT_FULLY_DISCONNECTED=ON',
         '-DLLAMA_BUILD_SERVER=ON', '-DLLAMA_BUILD_COMMON=ON', '-DLLAMA_BUILD_TOOLS=ON',
