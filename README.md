@@ -81,8 +81,12 @@ MIT, see [LICENSE](LICENSE). DenseX modifications Copyright (c) 2026 mazemaze. D
 
 Design references (ideas studied, re-implemented in DenseX's own way): Mirai S server (MIT, Copyright (c) 2026 Cary Palmer), Strata (MIT).
 
+**About the contributor count:** This repository was created from a clone of llama.cpp, and its history was later rewritten so that `main` starts from a single commit importing llama.cpp `620d2225`. GitHub's sidebar may still show the contributor count cached from the original llama.cpp history (about 300). Those people are the authors of llama.cpp / ggml, not of DenseX's own changes. Their work is credited above and in [AUTHORS](AUTHORS). The commits in this repository are listed by `git shortlog -sn`.
+
 ## 繁體中文摘要
 
 DenseX 是讓 12 GB 等級顯示卡跑大型稠密模型長上下文的實驗性推論引擎，由 llama.cpp `620d2225` 分出後獨立發展、不追蹤上游。目前在 RTX 3060 12 GB 上，Qwen 3.8 27B 於 120K 上下文可達約 28 tok/s（4K 約 32 tok/s）。功能多為預設關閉的開關，詳見上表與 commit 紀錄。
+
+側欄的貢獻者人數（約 300）是 GitHub 從 llama.cpp 原始歷史留下的快取，那些是 llama.cpp／ggml 的作者，並非 DenseX 的開發者；DenseX 本身的提交可用 `git shortlog -sn` 查看。
 
 主要支援 Qwen 3.8 27B 的 GSQ-RCO 全系列，Unsloth Dynamic v3.1 是後來加入的第二系列；Swift 1.5 是目前實測樣本，其他檔位與顯存配置仍待量測。首次使用請依[安裝文件](docs/densex/INSTALL.md)建置、下載並驗證模型，再測短請求；長文設定與記憶體問題見[使用說明](docs/densex/USAGE.md)，實際品質分數與限制見[品質報告](docs/densex/QUALITY.md)。要請 AI agent 協助安裝，請提供 [AI_SETUP](docs/densex/AI_SETUP.md)。
