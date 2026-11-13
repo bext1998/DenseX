@@ -89,7 +89,7 @@
 		{/if}
 
 		{#if count !== undefined}
-			<span class="shrink-0 text-xs text-muted-foreground/70">{count}</span>
+			<span class="shrink-0 text-xs text-muted-foreground">{count}</span>
 		{/if}
 	{/snippet}
 

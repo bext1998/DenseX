@@ -201,9 +201,7 @@
 						<div class="my-1 border-t border-border/30"></div>
 					{/if}
 
-					<div
-						class="py-0.5 text-[11px] font-medium tracking-wide text-muted-foreground/70 uppercase"
-					>
+					<div class="py-0.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
 						Templates
 					</div>
 

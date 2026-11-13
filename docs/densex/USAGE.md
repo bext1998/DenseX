@@ -216,6 +216,7 @@ The [build script](../../scripts/densex/build.ps1) accepts:
 | `-BuildRoot` | `<checkout>/build`; standalone script only, wrapper supplies its own root |
 | `-CudaPath` | Standard CUDA Toolkit 13.0 directory; point to the installed toolkit if different |
 | `-Tests` | Off; configure tests when explicitly building a test target |
+| `-UI` | Off; run `npm ci` and build/embed the current DenseX web interface. Requires Node/npm and registry access. Without it, existing dist assets may still be embedded; no UI download is performed. |
 | `-Concurrent` | Off; permits building during inference, which can perturb measurements. Do not use to bypass another worker's lock. |
 
 ## Troubleshooting

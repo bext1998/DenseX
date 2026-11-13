@@ -1,4 +1,5 @@
 <script lang="ts">
+	import ConsoleNavigation from '../ConsoleNavigation.svelte';
 	import { PanelLeftClose, PanelLeftOpen, X } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
@@ -367,6 +368,10 @@
 				/>
 			</div>
 
+			{#if isStripExpanded || isOnMobile}
+				<span class="mr-auto ml-3 text-lg font-semibold">DenseX</span>
+			{/if}
+
 			{#if isOnMobile || (uiStore.isSidebarExpanded && !alwaysShowOnDesktop)}
 				<div
 					in:fade={{ delay: 50, duration: 150, easing: circIn }}
@@ -393,10 +398,14 @@
 		<div
 			in:fade={{ duration: 200 }}
 			out:fade={{ duration: 200 }}
-			class="mt-2 flex min-h-0 flex-1 flex-col gap-4 md:gap-1 {deviceStore.isMobile
+			class="mt-2 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto md:gap-1 {deviceStore.isMobile
 				? 'transition-[opacity,height] duration-200 ease-out'
 				: ''} {deviceStore.isMobile && !uiStore.isSidebarExpanded ? 'opacity-0 !h-0' : ''}"
 		>
+			{#if uiStore.isSidebarExpanded}
+				<ConsoleNavigation />
+			{/if}
+
 			<SidebarNavigationActions
 				bind:isSearchModeActive
 				bind:searchQuery

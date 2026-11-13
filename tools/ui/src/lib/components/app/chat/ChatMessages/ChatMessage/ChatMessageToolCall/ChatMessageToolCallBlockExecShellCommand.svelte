@@ -203,7 +203,7 @@
 
 	{#snippet children(_meta, ctx)}
 		{#if ctx.isPending}
-			<div class="flex items-start gap-2 text-xs text-muted-foreground/70">
+			<div class="flex items-start gap-2 text-xs text-muted-foreground">
 				<Loader2 class="h-3 w-3 animate-spin" />
 				Running...
 			</div>

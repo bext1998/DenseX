@@ -1,12 +1,13 @@
 # Build DenseX (Windows, MSVC + CUDA, Ninja, static, CUDA FA for all KV quant types).
 # usage: pwsh -File scripts/densex/build.ps1 [-Target llama-server] [-Arch 86] [-Jobs 6] [-Name sm86] [-Concurrent] [-Tests]
-#        [-Src <checkout>] [-BuildRoot <dir>]
+#        [-Src <checkout>] [-BuildRoot <dir>] [-UI]
 # Writes <BuildRoot, default <repo>/build>/<Name, default sm<Arch>>/bin/<target>.exe and appends a BUILD_INFO.txt line
 # (commit, uncommitted-diff hash, exe hash); log <BuildRoot>/build-<time>.log, last line BUILD_FINISHED or BUILD_FAILED.
 # -Tests also configures the tests (e.g. -Target test-backend-ops). -Src builds another checkout (e.g. a git worktree).
 # -Concurrent builds while an inference process runs (its speed may be perturbed).
+# DenseX: -UI runs npm ci + build from current sources; off skips npm but may embed existing dist assets.
 param([string]$Target = 'llama-server', [string]$Arch = '86', [int]$Jobs = 6, [string]$Name = '', [switch]$Concurrent, [switch]$Tests,
-      [string]$CudaPath = 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0', [string]$Src = '', [string]$BuildRoot = '')
+      [string]$CudaPath = 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0', [string]$Src = '', [string]$BuildRoot = '', [switch]$UI)
 $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1 turns a native tool's stderr into a terminating error while $ErrorActionPreference is 'Stop'
 # and the output is redirected with *>>. A fresh cmake configure writes warnings to stderr ("Manually-specified
@@ -39,12 +40,13 @@ try {
     }
     $env:PATH = "$CudaPath/bin;$CudaPath/bin/x64;$env:PATH"
     Log "build dir: $build; concurrent: $Concurrent"
+    Log "UI source build: $UI; prebuilt download: off; when UI is off, existing source/build dist assets may still be embedded"
     Log "commit: $(git -C $src rev-parse HEAD); dirty files: $((git -C $src status --short) -join ', ')"
     $configure = @('-S', $src, '-B', $build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
         '-DCMAKE_C_COMPILER=cl.exe', '-DCMAKE_CXX_COMPILER=cl.exe',
         "-DCMAKE_CUDA_COMPILER=$CudaPath/bin/nvcc.exe", "-DCUDAToolkit_ROOT=$CudaPath",
         "-DCMAKE_CUDA_ARCHITECTURES=$Arch", '-DGGML_CUDA=ON', '-DGGML_CUDA_FA_QUANTS=all',
-        '-DBUILD_SHARED_LIBS=OFF', '-DLLAMA_BUILD_UI=OFF', '-DLLAMA_USE_PREBUILT_UI=OFF',
+        '-DBUILD_SHARED_LIBS=OFF', $(if ($UI) { '-DLLAMA_BUILD_UI=ON' } else { '-DLLAMA_BUILD_UI=OFF' }), '-DLLAMA_USE_PREBUILT_UI=OFF',
         '-DLLAMA_LLGUIDANCE=OFF', '-DFETCHCONTENT_FULLY_DISCONNECTED=ON',
         '-DLLAMA_BUILD_SERVER=ON', '-DLLAMA_BUILD_COMMON=ON', '-DLLAMA_BUILD_TOOLS=ON',
         $(if ($Tests) { '-DLLAMA_BUILD_TESTS=ON' } else { '-DLLAMA_BUILD_TESTS=OFF' }), '-DLLAMA_BUILD_EXAMPLES=OFF', '-DLLAMA_BUILD_APP=OFF')

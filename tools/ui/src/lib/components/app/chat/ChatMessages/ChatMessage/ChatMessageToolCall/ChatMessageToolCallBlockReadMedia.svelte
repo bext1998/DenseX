@@ -55,7 +55,7 @@
 	{#snippet children(_meta, _ctx)}
 		{#if section.toolResult}
 			{#if !mediaAttachment}
-				<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground/70 italic">
+				<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground italic">
 					Media attachment not found in message extras
 				</div>
 			{:else if mediaAttachment.type === AttachmentType.AUDIO}
@@ -92,10 +92,10 @@
 			{/if}
 
 			{#if readMediaMeta?.path}
-				<div class="mt-1 font-mono text-xs text-muted-foreground/60">{readMediaMeta.path}</div>
+				<div class="mt-1 font-mono text-xs text-muted-foreground">{readMediaMeta.path}</div>
 			{/if}
 		{:else}
-			<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground/70 italic">
+			<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground italic">
 				Waiting for media data...
 			</div>
 		{/if}

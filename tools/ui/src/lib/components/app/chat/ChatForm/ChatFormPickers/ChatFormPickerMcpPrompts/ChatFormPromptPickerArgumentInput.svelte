@@ -46,7 +46,7 @@
 		</span>
 
 		{#if isLoadingSuggestions}
-			<span class="text-xs text-muted-foreground/50">...</span>
+			<span class="text-xs text-muted-foreground">...</span>
 		{/if}
 	</Label>
 

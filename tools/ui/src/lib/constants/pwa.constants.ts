@@ -12,11 +12,11 @@ export const MEDIA_QUERIES = {
 } as const;
 
 export const THEME_COLORS = {
-	ACCENT_BLUE: '#2563eb',
-	ACCENT_BLUE_HOVER: '#1d4ed8',
-	BACKGROUND_DARK: '#111111',
-	BACKGROUND_LIGHT: 'white',
-	DARK: '#0d0d0d',
+	ACCENT_BLUE: '#087BFA',
+	ACCENT_BLUE_HOVER: '#0668D6',
+	BACKGROUND_DARK: '#101419',
+	BACKGROUND_LIGHT: '#ffffff',
+	DARK: '#101419',
 	LIGHT: '#ffffff',
 	TITLE_UPDATE_ALERT: {
 		BG_DARK: 'zinc-800',
@@ -38,8 +38,8 @@ export const FAVICON_PATHS = {
 // Substituted for `currentColor` in src/lib/assets/logo.svg when generating
 // the light/dark static sources consumed by the PWA asset generator.
 export const FAVICON_COLORS = {
-	DARK: '#fafafa',
-	LIGHT: '#111111'
+	DARK: '#E6EDF3',
+	LIGHT: '#16181B'
 } as const;
 
 export const FAVICON_SELECTORS = {
@@ -53,7 +53,7 @@ export const APPLE_ASSETS = {
 
 export const PWA_MANIFEST = {
 	background_color: THEME_COLORS.BACKGROUND_LIGHT,
-	description: 'Local AI chat interface powered by llama.cpp',
+	description: 'DenseX local AI workspace',
 	display: 'standalone' as const,
 	icons: [
 		{ sizes: '64x64', src: 'pwa-64x64.png', type: 'image/png' },

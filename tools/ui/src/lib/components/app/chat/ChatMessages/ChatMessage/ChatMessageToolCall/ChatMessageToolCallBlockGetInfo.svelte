@@ -78,7 +78,7 @@
 					{#if infoMeta.os}
 						<tr>
 							<th
-								class="py-1 pr-3 text-left align-baseline text-[11px] font-medium tracking-wide text-muted-foreground/60 uppercase"
+								class="py-1 pr-3 text-left align-baseline text-[11px] font-medium tracking-wide text-muted-foreground uppercase"
 								scope="row"
 							>
 								os
@@ -95,7 +95,7 @@
 					{#if infoMeta.cwd}
 						<tr>
 							<th
-								class="py-1 pr-3 text-left align-baseline text-[11px] font-medium tracking-wide text-muted-foreground/60 uppercase"
+								class="py-1 pr-3 text-left align-baseline text-[11px] font-medium tracking-wide text-muted-foreground uppercase"
 								scope="row"
 							>
 								cwd
@@ -114,11 +114,11 @@
 				</tbody>
 			</table>
 		{:else if section.toolResult}
-			<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground/70 italic">
+			<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground italic">
 				{section.toolResult}
 			</div>
 		{:else}
-			<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground/70 italic">
+			<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground italic">
 				Waiting for runtime info...
 			</div>
 		{/if}

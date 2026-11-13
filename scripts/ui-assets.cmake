@@ -1,9 +1,9 @@
 # Provision UI assets and generate ui.cpp/ui.h.
 #
 # Asset provisioning priority:
-#   1. Pre-built assets in SRC_DIST_DIR (manually built by user)
-#   2. If BUILD_UI=ON: npm build
-#   3. If above did not produce assets and HF_ENABLED=ON: HF Bucket download
+#   1. If BUILD_UI=ON: fresh npm ci + build (DenseX; failure is fatal)
+#   2. Otherwise, pre-built assets in SRC_DIST_DIR (manually built by user)
+#   3. If npm is disabled, no source dist exists and HF_ENABLED=ON: HF Bucket download
 #      of dist.tar.gz (verified against dist.tar.gz.sha256)
 
 cmake_minimum_required(VERSION 3.18)
@@ -273,46 +273,6 @@ function(emit_files dist_dir)
     message(STATUS "UI: embedded ${n_assets} assets")
 endfunction()
 
-function(npm_build_should_skip out_var)
-    set(${out_var} FALSE PARENT_SCOPE)
-
-    if(NOT EXISTS "${DIST_DIR}/index.html")
-        return()
-    endif()
-
-    if(EXISTS "${STAMP_FILE}")
-        return()
-    endif()
-
-    if(NOT EXISTS "${UI_SOURCE_DIR}/sources.cmake")
-        return()
-    endif()
-    include("${UI_SOURCE_DIR}/sources.cmake")
-
-    set(globs "")
-    foreach(g ${UI_SOURCE_GLOBS})
-        list(APPEND globs "${UI_SOURCE_DIR}/${g}")
-    endforeach()
-    file(GLOB_RECURSE sources ${globs})
-    foreach(f ${UI_SOURCE_FILES})
-        list(APPEND sources "${UI_SOURCE_DIR}/${f}")
-    endforeach()
-
-    file(TIMESTAMP "${DIST_DIR}/index.html" out_ts)
-
-    foreach(s ${sources})
-        if(NOT EXISTS "${s}")
-            continue()
-        endif()
-        file(TIMESTAMP "${s}" s_ts)
-        if(s_ts STRGREATER out_ts)
-            return()
-        endif()
-    endforeach()
-
-    set(${out_var} TRUE PARENT_SCOPE)
-endfunction()
-
 function(stage_sources)
     if(EXISTS "${WORK_DIR}")
         file(GLOB staged RELATIVE "${WORK_DIR}" "${WORK_DIR}/*")
@@ -337,13 +297,6 @@ function(npm_build out_var)
         return()
     endif()
 
-    npm_build_should_skip(skip)
-    if(skip)
-        message(STATUS "UI: npm output up-to-date, skipping build")
-        set(${out_var} TRUE PARENT_SCOPE)
-        return()
-    endif()
-
     if(CMAKE_HOST_WIN32)
         find_program(NPM_EXECUTABLE NAMES npm.cmd npm.bat npm)
     else()
@@ -356,35 +309,22 @@ function(npm_build out_var)
 
     stage_sources()
 
-    # npm writes node_modules/.package-lock.json on every successful install,
-    # so a package-lock.json newer than this marker means node_modules is stale
-    set(NPM_MARKER "${WORK_DIR}/node_modules/.package-lock.json")
-    set(need_install FALSE)
-    if(NOT EXISTS "${NPM_MARKER}")
-        set(need_install TRUE)
-    else()
-        file(TIMESTAMP "${WORK_DIR}/package-lock.json" lock_ts)
-        file(TIMESTAMP "${NPM_MARKER}" marker_ts)
-        if(lock_ts STRGREATER marker_ts)
-            set(need_install TRUE)
-        endif()
+    # DenseX: explicit UI builds use the lockfile, including when old dist assets exist.
+    message(STATUS "UI: running npm ci")
+    execute_process(
+        COMMAND ${NPM_EXECUTABLE} ci
+        WORKING_DIRECTORY "${WORK_DIR}"
+        RESULT_VARIABLE rc
+        ERROR_VARIABLE  err
+    )
+    if(NOT rc EQUAL 0)
+        message(STATUS "UI: npm ci failed (${rc})")
+        message(STATUS "  stderr: ${err}")
+        return()
     endif()
 
-    if(need_install)
-        message(STATUS "UI: running npm ci")
-        execute_process(
-            COMMAND ${NPM_EXECUTABLE} ci
-            WORKING_DIRECTORY "${WORK_DIR}"
-            RESULT_VARIABLE rc
-            ERROR_VARIABLE  err
-        )
-        if(NOT rc EQUAL 0)
-            message(STATUS "UI: npm ci failed (${rc})")
-            message(STATUS "  stderr: ${err}")
-            return()
-        endif()
-    endif()
-
+    # DenseX: a successful command that emits nothing must not pass via an old index.html.
+    file(REMOVE_RECURSE "${DIST_DIR}")
     file(MAKE_DIRECTORY "${DIST_DIR}")
 
     message(STATUS "UI: running npm run build, output -> ${DIST_DIR}")
@@ -518,7 +458,20 @@ function(hf_download version out_var out_resolved)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# 1. Priority 1: pre-built assets supplied in tools/ui/dist
+# 1. DenseX: explicit source builds must not reuse dist or silently fall back.
+# ---------------------------------------------------------------------------
+if(BUILD_UI)
+    resolve_version(HF_VERSION)
+    npm_build(NPM_OK)
+    if(NOT NPM_OK)
+        message(FATAL_ERROR "UI: requested source build failed; refusing stale or downloaded assets")
+    endif()
+    emit_files("${DIST_DIR}")
+    return()
+endif()
+
+# ---------------------------------------------------------------------------
+# 2. Pre-built assets supplied in tools/ui/dist (npm disabled)
 # ---------------------------------------------------------------------------
 if(EXISTS "${SRC_DIST_DIR}/index.html")
     message(STATUS "UI: using pre-built assets from ${SRC_DIST_DIR}")
@@ -527,22 +480,9 @@ if(EXISTS "${SRC_DIST_DIR}/index.html")
 endif()
 
 # ---------------------------------------------------------------------------
-# 2. Priority 2: npm build (if BUILD_UI=ON)
+# 3. HF Bucket download (if HF_ENABLED=ON)
 # ---------------------------------------------------------------------------
 set(provisioned FALSE)
-
-if(BUILD_UI)
-    # Resolve version from git build-info if not explicitly set
-    resolve_version(HF_VERSION)
-    npm_build(NPM_OK)
-    if(NPM_OK)
-        set(provisioned TRUE)
-    endif()
-endif()
-
-# ---------------------------------------------------------------------------
-# 3. Priority 3: HF Bucket download (if npm did not produce assets and HF_ENABLED=ON)
-# ---------------------------------------------------------------------------
 if(NOT provisioned AND HF_ENABLED)
     resolve_version(VERSION)
 

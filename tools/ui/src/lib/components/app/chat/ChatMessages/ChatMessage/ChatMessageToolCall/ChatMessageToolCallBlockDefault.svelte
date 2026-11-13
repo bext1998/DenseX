@@ -37,7 +37,7 @@
 <ToolCallBlock {isStreaming} meta={null} {onToggle} {open} {section} {title}>
 	{#snippet children(_meta, ctx)}
 		{#if ctx.isStreamingCall}
-			<div class="mb-2 flex items-center gap-2 text-xs text-muted-foreground/70">
+			<div class="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
 				<span>Input</span>
 
 				{#if ctx.isStreaming}
@@ -53,7 +53,7 @@
 					streaming={ctx.isCodeStreaming}
 				/>
 			{:else if ctx.isStreaming}
-				<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground/70 italic">
+				<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground italic">
 					Receiving arguments...
 				</div>
 			{:else}
@@ -66,7 +66,7 @@
 		{:else}
 			{@const showInput = Boolean(section.toolArgs)}
 			{#if showInput}
-				<div class="mb-1.5 flex items-center gap-2 text-xs text-muted-foreground/70">
+				<div class="mb-1.5 flex items-center gap-2 text-xs text-muted-foreground">
 					<span>Input</span>
 				</div>
 
@@ -80,8 +80,8 @@
 
 			<div
 				class={showInput
-					? 'mt-4 mb-1.5 flex items-center gap-2 text-xs text-muted-foreground/70'
-					: 'mb-1.5 flex items-center gap-2 text-xs text-muted-foreground/70'}
+					? 'mt-4 mb-1.5 flex items-center gap-2 text-xs text-muted-foreground'
+					: 'mb-1.5 flex items-center gap-2 text-xs text-muted-foreground'}
 			>
 				<span>Output</span>
 
@@ -91,7 +91,7 @@
 			</div>
 
 			{#if ctx.isPending}
-				<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground/70 italic">
+				<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground italic">
 					Waiting for result...
 				</div>
 			{:else if section.toolResult}
@@ -135,7 +135,7 @@
 					</div>
 				{/if}
 			{:else}
-				<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground/70 italic">No output</div>
+				<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground italic">No output</div>
 			{/if}
 		{/if}
 	{/snippet}

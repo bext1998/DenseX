@@ -405,7 +405,7 @@
 				<span class="px-2 py-1.5 font-mono text-[10px]">
 					Searching in:
 
-					<span class="truncate text-muted-foreground/70" title={searchScope}
+					<span class="truncate text-muted-foreground" title={searchScope}
 						>{abbreviateHome(searchScope, homeBase)}</span
 					>
 				</span>

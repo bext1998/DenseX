@@ -102,7 +102,7 @@
 						src={faviconUrl}
 					/>
 				{:else}
-					<Globe class="text-muted-foreground/70 h-3 w-3 shrink-0" />
+					<Globe class="text-muted-foreground h-3 w-3 shrink-0" />
 				{/if}
 
 				<span class="truncate font-medium text-foreground/80">{result.title}</span>
@@ -150,7 +150,7 @@
 						{/if}
 
 						{#if host}
-							<div class="text-muted-foreground/80 truncate text-[11px]">{host}</div>
+							<div class="text-muted-foreground truncate text-[11px]">{host}</div>
 						{/if}
 					</div>
 				</HoverCard.Content>
@@ -167,12 +167,12 @@
 			{/each}
 		</div>
 	{:else if showSpinner}
-		<div class="text-muted-foreground/70 flex items-center gap-2 py-1 text-xs italic">
+		<div class="text-muted-foreground flex items-center gap-2 py-1 text-xs italic">
 			<Loader2 class="h-3 w-3 animate-spin" />
 
 			<span>Searching...</span>
 		</div>
 	{:else}
-		<div class="text-muted-foreground/70 py-1 text-xs italic">No results</div>
+		<div class="text-muted-foreground py-1 text-xs italic">No results</div>
 	{/if}
 </CollapsibleContentBlock>

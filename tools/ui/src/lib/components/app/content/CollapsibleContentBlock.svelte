@@ -62,7 +62,7 @@
 					src={iconUrl}
 				/>
 			{:else if IconComponent}
-				<IconComponent class={cn('shrink-0 text-muted-foreground/60 mt-0.75', iconClass)} />
+				<IconComponent class={cn('shrink-0 text-muted-foreground mt-0.75', iconClass)} />
 			{/if}
 
 			<span
@@ -79,13 +79,13 @@
 			</span>
 
 			{#if subtitle}
-				<span class="text-xs italic text-muted-foreground/70">{subtitle}</span>
+				<span class="text-xs italic text-muted-foreground">{subtitle}</span>
 			{/if}
 		</div>
 
 		<ChevronDown
 			class={cn(
-				'size-4 shrink-0 text-muted-foreground/60 transition-all duration-150 ease-out opacity-0 group-hover/collapsible:opacity-100 mt-0.75',
+				'size-4 shrink-0 text-muted-foreground transition-all duration-150 ease-out opacity-0 group-hover/collapsible:opacity-100 mt-0.75',
 				open && 'rotate-180'
 			)}
 		/>

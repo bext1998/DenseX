@@ -42,7 +42,14 @@ Test-Path -LiteralPath build/sm86/bin/llama-server.exe
 Success means exit code 0, `BUILD_FINISHED` at the end of the build log, and
 `Test-Path` returning `True`. The executable is `build/sm86/bin/llama-server.exe`.
 `build/sm86/BUILD_INFO.txt` records the source commit and executable provenance.
-The server build disables the bundled web UI; verify it through HTTP below.
+By default the build skips npm and does not download UI assets. Add `-UI` to
+install the locked UI dependencies (`npm ci`), build the current DenseX interface,
+and embed it in the server. This option requires Node.js and npm on `PATH` and
+network access to the package registry; UI build failures stop the server build.
+Without `-UI`, existing source/build `dist` assets can still be embedded, so the
+default means "skip the UI build", not "strip all UI assets". A fresh build with
+no existing assets serves only the API. This keeps Node optional for API-only
+users and engine CI. Verify the API through HTTP below.
 
 The default CUDA architecture is sm86. `-Arch 89` and `-Arch 120` select other
 architectures (**runtime untested**); do not assume sm86 binaries suit every GPU.
@@ -74,6 +81,11 @@ Test-Path -LiteralPath (Join-Path $workspace 'build/wt-codex/bin/llama-server.ex
 This assumes a direct child checkout and a previously unused `wt-codex` build
 name. The wrapper honors the workspace GPU lock. Wait for its owner to finish;
 do not use `-Concurrent` to bypass an active measurement.
+
+For the bundled interface, append `-UI` to the workspace command (the wrapper
+must forward this option to the selected checkout). After starting the server,
+open its root URL. Conversations retain the existing browser storage names;
+the six additional control-panel sections currently show "尚未提供".
 
 ## 2. Obtain the model
 

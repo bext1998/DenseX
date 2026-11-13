@@ -34,9 +34,7 @@
 
 	{#snippet children(meta, ctx)}
 		{#if ctx.isPending}
-			<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground/70 italic">
-				Searching...
-			</div>
+			<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground italic">Searching...</div>
 		{:else if meta?.errorMessage}
 			<div
 				class="flex items-start gap-2 rounded bg-red-500/10 p-2 text-xs text-red-600 italic dark:text-red-400"
@@ -49,20 +47,20 @@
 			<div class="max-h-96 overflow-auto">
 				{#each meta.matches as match, mi (mi)}
 					<div class="font-mono text-[11px] leading-relaxed">
-						<span class="text-muted-foreground/70">{match.file}</span>
+						<span class="text-muted-foreground">{match.file}</span>
 
 						{#if meta.showLineNumbers && match.line != null}
-							<span class="text-muted-foreground/70">:{match.line}</span>
+							<span class="text-muted-foreground">:{match.line}</span>
 						{/if}
 
-						<span class="text-muted-foreground/70">:</span>
+						<span class="text-muted-foreground">:</span>
 
 						<span>{match.content}</span>
 					</div>
 				{/each}
 			</div>
 
-			<div class="mt-1.5 text-xs text-muted-foreground/70 italic">
+			<div class="mt-1.5 text-xs text-muted-foreground italic">
 				Total matches: <span class="font-mono">{meta.totalMatches ?? meta.matches.length}</span>
 
 				{#if meta.showLineNumbers}
@@ -70,9 +68,9 @@
 				{/if}
 			</div>
 		{:else}
-			<div class="text-xs text-muted-foreground/70 italic">No matches</div>
+			<div class="text-xs text-muted-foreground italic">No matches</div>
 
-			<div class="mt-1.5 text-xs text-muted-foreground/70 italic">
+			<div class="mt-1.5 text-xs text-muted-foreground italic">
 				Total matches: <span class="font-mono">{meta?.totalMatches ?? 0}</span>
 			</div>
 		{/if}

@@ -246,7 +246,7 @@
 				<br />
 
 				{#if !mcpStore.isProxyAvailable}
-					<span class="inline-flex gap-0.75 text-xs text-muted-foreground/60"
+					<span class="inline-flex gap-0.75 text-xs text-muted-foreground"
 						>(Run <pre>llama-server</pre>
 						with
 						<pre>{CLI_FLAGS.MCP_PROXY}</pre>

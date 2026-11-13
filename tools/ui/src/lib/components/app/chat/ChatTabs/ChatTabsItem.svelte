@@ -31,7 +31,7 @@
 		tab
 	}: Props = $props();
 
-	let contentOpacity = $derived(isActive ? '' : 'opacity-45 group-hover:opacity-75');
+	let contentOpacity = $derived(isActive ? '' : 'opacity-80 group-hover:opacity-100');
 
 	let href = $derived(tab.isNewChat ? ROUTES.START : RouterService.chat(tab.id));
 

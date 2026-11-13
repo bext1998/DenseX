@@ -19,11 +19,11 @@
 				sm: 'h-8 gap-1.5 rounded-md px-3 has-[>svg]:px-2.5'
 			},
 			variant: {
-				default: 'bg-primary text-primary-foreground shadow-sm hover:bg-primary/90',
+				default: 'bg-primary text-primary-foreground shadow-sm hover:bg-primary-hover',
 				destructive:
-					'bg-destructive shadow-sm hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/60 text-white!',
+					'bg-destructive text-destructive-foreground! shadow-sm hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40',
 				ghost: 'hover:text-accent-foreground hover:bg-muted-foreground/10 backdrop-blur-sm',
-				link: 'text-primary underline-offset-4 hover:underline',
+				link: 'text-link underline-offset-4 hover:underline',
 				outline:
 					'shadow-sm hover:text-accent-foreground hover:bg-muted-foreground/10 backdrop-blur-sm dark:border-input border',
 				secondary:

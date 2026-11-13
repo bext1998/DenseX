@@ -39,7 +39,7 @@
 		{#if hasCumulative}
 			<div>
 				<h3
-					class="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70 mb-2 max-md:text-xs"
+					class="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2 max-md:text-xs"
 				>
 					Across all turns
 				</h3>
@@ -68,7 +68,7 @@
 		{#if hasCurrent}
 			<div>
 				<h3
-					class="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70 mb-2 max-md:text-xs"
+					class="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2 max-md:text-xs"
 				>
 					This turn · KV cache
 				</h3>

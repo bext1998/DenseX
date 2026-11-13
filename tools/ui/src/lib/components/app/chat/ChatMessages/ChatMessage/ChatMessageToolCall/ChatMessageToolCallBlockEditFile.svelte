@@ -38,7 +38,7 @@
 				</span>
 
 				{#if editFileMeta?.errorMessage}
-					<span class="shrink-0 text-xs italic text-muted-foreground/70">(failed)</span>
+					<span class="shrink-0 text-xs italic text-muted-foreground">(failed)</span>
 				{/if}
 			</span>
 		</span>
@@ -56,7 +56,7 @@
 		{:else if meta && editFileBody && editFileBody.edits.length > 0}
 			{#each editDiffs as diffLines, ei (ei)}
 				<div class={ei === 0 ? '' : 'mt-3'}>
-					<div class="mb-1.5 text-xs text-muted-foreground/70 italic">
+					<div class="mb-1.5 text-xs text-muted-foreground italic">
 						Edit {ei + 1}&nbsp;of&nbsp;{editFileBody.edits.length}
 					</div>
 
@@ -78,7 +78,7 @@
 				</div>
 			{/each}
 
-			<div class="mt-1.5 text-xs text-muted-foreground/70 italic">
+			<div class="mt-1.5 text-xs text-muted-foreground italic">
 				{#if meta.resultMessage}
 					{meta.resultMessage}{meta.editsApplied != null ? RESULT_STAT_SEPARATOR : ''}{/if}
 
@@ -88,7 +88,7 @@
 				{/if}
 			</div>
 		{:else}
-			<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground/70 italic">No edits</div>
+			<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground italic">No edits</div>
 		{/if}
 	{/snippet}
 </ToolCallBlock>

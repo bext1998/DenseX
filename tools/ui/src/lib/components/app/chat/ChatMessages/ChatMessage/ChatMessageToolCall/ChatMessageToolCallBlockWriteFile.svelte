@@ -36,7 +36,7 @@
 				</span>
 
 				{#if writeFileMeta?.errorMessage}
-					<span class="shrink-0 text-xs italic text-muted-foreground/70">(failed)</span>
+					<span class="shrink-0 text-xs italic text-muted-foreground">(failed)</span>
 				{/if}
 			</span>
 		</span>
@@ -59,7 +59,7 @@
 				streaming={ctx.isCodeStreaming}
 			/>
 
-			<div class="mt-1.5 text-xs text-muted-foreground/70 italic">
+			<div class="mt-1.5 text-xs text-muted-foreground italic">
 				{#if meta.resultMessage}
 					{meta.resultMessage}{meta.bytesWritten != null ? RESULT_STAT_SEPARATOR : ''}{/if}
 
