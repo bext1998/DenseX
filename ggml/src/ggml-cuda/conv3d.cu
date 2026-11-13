@@ -106,12 +106,7 @@ static __global__ void conv3d_implicit_gemm_f16(const half * __restrict__ input,
     const int pos1                = (z1 * sz * ih + y1 * sy) * iw + x1 * sx;
     [[maybe_unused]] const int wm = threadIdx.y / 2 * 32, wn = threadIdx.y % 2 * 32;
     using tile_ab = tile<16, 8, half2, get_input_data_layout()>;
-#if defined(AMD_WMMA_AVAILABLE) || defined(AMD_MFMA_AVAILABLE)
-    // AMD accumulator fragments transpose the input fragment's row/column mapping.
-    using tile_c = tile<16, 16, float, DATA_LAYOUT_J_MAJOR>;
-#else
     using tile_c = tile<16, 16, float>;
-#endif
     [[maybe_unused]] tile_c    c[2][2];
     constexpr int              RM = 4, RN = BM * BN / (nthreads * RM);
     [[maybe_unused]] const int simt_m = tid / (BN / RN) * RM, simt_n = tid % (BN / RN) * RN;

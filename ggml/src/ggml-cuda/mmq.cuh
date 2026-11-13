@@ -178,11 +178,7 @@ struct ggml_cuda_mmq_config {
         type(type), nthreads(nthreads), occupancy(occupancy), I(I), J(J), sram_layout(sram_layout), K_vram(K_vram), stream_k(stream_k), fallback(fallback) {}
 
     constexpr __device__ int rows_per_warp() const {
-#if defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        return 16;
-#else
         return J >= 48 && J % 16 == 0 ? 32 : 16;
-#endif // defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     }
 
     // TODO transition all combinations of GPUs and quantizations to the MMA data layout.
@@ -194,11 +190,11 @@ struct ggml_cuda_mmq_config {
     }
 
     constexpr __device__ bool use_mma_data_layout() const {
-#if defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE)
+#if defined(TURING_MMA_AVAILABLE)
         return true;
 #else
         return false;
-#endif // defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE)
+#endif
     }
 
 };
@@ -458,11 +454,7 @@ static __device__ __forceinline__ void ggml_cuda_mmq_write_back_mma(
             const float * __restrict__ sum, const int * __restrict__ ids_dst, float * __restrict__ dst,
             const float * __restrict__ y_scale, const int stride, const int i_max, const int j_max) {
 
-#if defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-    typedef tile<16, 16, int, DATA_LAYOUT_J_MAJOR> tile_C;
-#else
     typedef tile<16,  8, int> tile_C;
-#endif // defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
 
     constexpr int rows_per_warp = ggml_cuda_mmq_get_rows_per_warp(type, J, fallback, prec_src1);
     constexpr int ntx           = rows_per_warp/tile_C::I; // Number of x minitiles per warp.
