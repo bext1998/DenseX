@@ -2779,10 +2779,10 @@ private:
         return h;
     }
 
-    // Everything that changes the meaning of a stored state goes into the key: model, context size, KV types, draft /
-    // MTP configuration, and finally the prompt itself. Changing any of them (e.g. K4V4 -> q8_0) just misses the cache
-    // instead of restoring an incompatible state.
-    std::string doc_cache_key(const server_tokens & tokens) const {
+    // Everything that changes the meaning of a stored state goes into the signature: model, context size, KV types,
+    // draft / MTP configuration. Changing any of them (e.g. K4V4 -> q8_0) just misses the cache instead of restoring
+    // an incompatible state.
+    std::string doc_cache_signature() const {
         std::string sig;
         sig += "densex-doc-cache-v1\n";
         sig += params_base.model.path + "\n";
@@ -2794,15 +2794,119 @@ private:
         sig += "dft_kv_window=" + std::to_string(params_base.speculative.draft.kv_window) + "\n";
         sig += "dft_kv=" + std::to_string((int) params_base.speculative.draft.cache_type_k) + "," +
                std::to_string((int) params_base.speculative.draft.cache_type_v) + "\n";
+        return sig;
+    }
 
-        uint64_t h = 0xcbf29ce484222325ULL;
-        h = doc_cache_mix(h, sig.data(), sig.size());
+    uint64_t doc_cache_settings_hash() const {
+        const std::string sig = doc_cache_signature();
+        return doc_cache_mix(0xcbf29ce484222325ULL, sig.data(), sig.size());
+    }
+
+    // <settings+prompt hash>-<n_tokens>.bin: an exact repeat finds its file without reading anything else
+    std::string doc_cache_key(const server_tokens & tokens) const {
+        uint64_t h = doc_cache_settings_hash();
         const llama_tokens & toks = tokens.get_tokens();
         h = doc_cache_mix(h, toks.data(), toks.size()*sizeof(llama_token));
 
         char buf[80];
         snprintf(buf, sizeof(buf), "%016" PRIx64 "-%zu.bin", h, tokens.size());
         return std::string(buf);
+    }
+
+    // Every entry also stores its token sequence in a small sidecar, so that a request for the same document with a
+    // different question can find the longest shared prefix without reading the multi-GB state.
+    static constexpr uint32_t DOC_CACHE_TOK_MAGIC   = 0x4b4f5432; // "TOK2"
+    static constexpr uint32_t DOC_CACHE_TOK_VERSION = 1;
+
+    bool doc_cache_write_tokens(const std::string & bin_path, const server_tokens & tokens) const {
+        std::ofstream ofs(std::filesystem::u8path(bin_path + ".tok"), std::ios::binary | std::ios::trunc);
+        if (!ofs) {
+            return false;
+        }
+        const uint32_t magic    = DOC_CACHE_TOK_MAGIC;
+        const uint32_t version  = DOC_CACHE_TOK_VERSION;
+        const uint64_t settings = doc_cache_settings_hash();
+        const uint64_t n        = tokens.size();
+        ofs.write((const char *) &magic,    sizeof(magic));
+        ofs.write((const char *) &version,  sizeof(version));
+        ofs.write((const char *) &settings, sizeof(settings));
+        ofs.write((const char *) &n,        sizeof(n));
+        ofs.write((const char *) tokens.get_tokens().data(), (std::streamsize) (n*sizeof(llama_token)));
+        ofs.flush();
+        return (bool) ofs;
+    }
+
+    bool doc_cache_read_tokens(const std::string & bin_path, std::vector<llama_token> & tokens) const {
+        std::ifstream ifs(std::filesystem::u8path(bin_path + ".tok"), std::ios::binary);
+        if (!ifs) {
+            return false;
+        }
+        uint32_t magic    = 0;
+        uint32_t version  = 0;
+        uint64_t settings = 0;
+        uint64_t n        = 0;
+        ifs.read((char *) &magic,    sizeof(magic));
+        ifs.read((char *) &version,  sizeof(version));
+        ifs.read((char *) &settings, sizeof(settings));
+        ifs.read((char *) &n,        sizeof(n));
+        if (!ifs || magic != DOC_CACHE_TOK_MAGIC || version != DOC_CACHE_TOK_VERSION) {
+            return false;
+        }
+        // a state written for another model / context / KV configuration is never a prefix candidate
+        if (settings != doc_cache_settings_hash()) {
+            return false;
+        }
+        if (n == 0 || n > 10u*1000u*1000u) {
+            return false;
+        }
+        tokens.resize(n);
+        ifs.read((char *) tokens.data(), (std::streamsize) (n*sizeof(llama_token)));
+        return (bool) ifs;
+    }
+
+    struct doc_cache_hit {
+        std::string bin;
+        std::vector<llama_token> tokens;
+        size_t lcp = 0;
+    };
+
+    // Pick the entry that shares the longest prefix with the request. Entries that are not strictly shorter than the
+    // request are skipped: a full match is the job of the exact file name, and a longer entry would only make the
+    // server roll back to the request length.
+    bool doc_cache_find_prefix(const server_tokens & tokens, doc_cache_hit & best) const {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const llama_tokens & req = tokens.get_tokens();
+
+        bool found = false;
+        for (const auto & e : fs::directory_iterator(fs::u8path(doc_cache_path), ec)) {
+            if (!e.is_regular_file(ec) || e.path().extension() != ".tok") {
+                continue;
+            }
+            std::string bin = e.path().u8string();
+            bin.resize(bin.size() - 4); // drop ".tok"
+
+            std::vector<llama_token> toks;
+            if (!doc_cache_read_tokens(bin, toks)) {
+                continue;
+            }
+
+            size_t n = 0;
+            const size_t m = std::min(toks.size(), req.size());
+            while (n < m && toks[n] == req[n]) {
+                n++;
+            }
+            if (n < doc_cache_min_tokens || n >= req.size()) {
+                continue;
+            }
+            if (!found || n > best.lcp) {
+                best.bin    = bin;
+                best.tokens = std::move(toks);
+                best.lcp    = n;
+                found       = true;
+            }
+        }
+        return found;
     }
 
     // Drop the oldest files until the cache fits into --densex-doc-cache-max-mib. `keep` is never evicted.
@@ -2833,6 +2937,8 @@ private:
             const uintmax_t sz = f.second.first;
             fs::remove(f.second.second, ec);
             if (!ec) {
+                std::error_code ec2;
+                fs::remove(fs::u8path(f.second.second.u8string() + ".tok"), ec2);
                 total -= sz;
                 SRV_TRC("document cache: evicted %s (%.1f MiB)\n", f.second.second.u8string().c_str(), (double) sz / 1024 / 1024);
             }
@@ -2887,6 +2993,12 @@ private:
 
         doc_cache_evict(path);
 
+        // sidecar with the token sequence: lets a later request for the same document (but another question) find
+        // this entry as a prefix candidate. A failure here costs the prefix match, not the exact one.
+        if (!doc_cache_write_tokens(path, slot.prompt.tokens)) {
+            SLT_WRN(slot, "document cache: could not write the token sidecar for '%s'\n", key.c_str());
+        }
+
         SLT_INF(slot, "document cache: wrote '%s' (%zu tokens, %.1f MiB) in %.0f ms\n", key.c_str(),
                 slot.prompt.tokens.size(), (double) (nwrite + n_ckpt + n_dft) / 1024 / 1024,
                 (ggml_time_us() - t_start) / 1000.0);
@@ -2900,12 +3012,28 @@ private:
             return false;
         }
 
-        const std::string key  = doc_cache_key(tokens);
-        const std::string path = doc_cache_path + key;
+        // 1) exact match: the file name is <settings+prompt hash>-<n>.bin
+        std::string key  = doc_cache_key(tokens);
+        std::string path = doc_cache_path + key;
         std::error_code ec;
-        if (!std::filesystem::exists(std::filesystem::u8path(path), ec)) {
-            SLT_TRC(slot, "document cache: '%s' not found (%zu request tokens)\n", key.c_str(), tokens.size());
-            return false;
+        bool exact = std::filesystem::exists(std::filesystem::u8path(path), ec);
+
+        // 2) same document, different question: use the entry with the longest shared prefix. The server rolls the
+        //    state back to its nearest context checkpoint at or below that prefix and only prefills the rest.
+        std::vector<llama_token> expect(tokens.get_tokens().begin(), tokens.get_tokens().end());
+        size_t lcp = tokens.size();
+        if (!exact) {
+            doc_cache_hit hit;
+            if (!doc_cache_find_prefix(tokens, hit)) {
+                SLT_TRC(slot, "document cache: '%s' not found and no prefix match (%zu request tokens)\n", key.c_str(), tokens.size());
+                return false;
+            }
+            path   = hit.bin;
+            expect = std::move(hit.tokens);
+            lcp    = hit.lcp;
+            key    = path.substr(doc_cache_path.size());
+            SLT_INF(slot, "document cache: prefix hit '%s' - %zu of %zu request tokens are cached\n",
+                    key.c_str(), lcp, tokens.size());
         }
 
         const int64_t t_start = ggml_time_us();
@@ -2930,7 +3058,9 @@ private:
         packed.resize(n_packed);
 
         server_tokens restored = server_tokens::deserialize(packed, mctx != nullptr);
-        if (restored.size() != tokens.size() || restored.get_tokens() != tokens.get_tokens() || !restored.validate(ctx_tgt)) {
+        if (restored.size() != expect.size() ||
+                !std::equal(expect.begin(), expect.end(), restored.get_tokens().begin()) ||
+                !restored.validate(ctx_tgt)) {
             SLT_WRN(slot, "document cache: '%s' holds a different prompt\n", key.c_str());
             slot.prompt_clear();
             return false;
@@ -2942,9 +3072,9 @@ private:
 
         slot.doc_cache_loaded = true;
 
-        SLT_INF(slot, "document cache: restored '%s' (%zu tokens, %.1f MiB, %.0f ms)\n", key.c_str(),
+        SLT_INF(slot, "document cache: restored '%s' (%zu tokens, %.1f MiB, %.0f ms, shared prefix %zu of %zu)\n", key.c_str(),
                 slot.prompt.tokens.size(), (double) (nread + n_ckpt + n_dft) / 1024 / 1024,
-                (ggml_time_us() - t_start) / 1000.0);
+                (ggml_time_us() - t_start) / 1000.0, lcp, tokens.size());
         return true;
     }
 
