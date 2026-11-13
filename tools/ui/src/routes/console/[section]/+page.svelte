@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Connections from './Connections.svelte';
+	import Requests from './Requests.svelte';
 	import { page } from '$app/state';
 	import { ApiError, apiFetch } from '$lib/utils/api-fetch';
 
@@ -237,6 +238,7 @@
 	<h1 class="text-2xl font-semibold">{title}</h1>
 
 	{#if section === 'connections'}<Connections />
+	{:else if section === 'requests'}<Requests />
 	{:else if !monitored}<p class="mt-4 text-muted-foreground">尚未提供</p>
 	{:else}
 		{#if status === 'disabled'}<div class="mt-4">

@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
 	await page.route('**/densex/telemetry', (route) => route.fulfill({ json: {}, status: 404 }));
+	await page.route('**/densex/requests', (route) => route.fulfill({ json: {}, status: 404 }));
 });
 
 test('DenseX sections preserve chat navigation and identify unavailable pages', async ({
@@ -16,7 +17,7 @@ test('DenseX sections preserve chat navigation and identify unavailable pages', 
 		await navigation.getByRole('link', { exact: true, name }).click();
 		await expect(page.getByRole('heading', { exact: true, name })).toBeVisible();
 
-		if (name === '總覽' || name === '硬體') {
+		if (name === '總覽' || name === '硬體' || name === '請求與日誌') {
 			await expect(page.getByText('遙測未啟用', { exact: true })).toBeVisible();
 		} else if (name !== 'API 連線') {
 			await expect(page.getByText('尚未提供', { exact: true })).toBeVisible();

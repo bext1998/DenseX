@@ -111,6 +111,9 @@ struct server_context {
 
     // note: must be set before load_model() is called
     void set_state_callback(server_state_callback_t callback);
+
+    uint64_t request_log_begin(const char * endpoint);
+    void request_log_error(uint64_t id, bool invalid_request);
 };
 
 
@@ -132,6 +135,7 @@ struct server_routes {
     server_http_context::handler_t get_health;
     server_http_context::handler_t get_metrics;
     server_http_context::handler_t get_densex_telemetry;
+    server_http_context::handler_t get_densex_requests;
     server_http_context::handler_t get_slots;
     server_http_context::handler_t post_slots;
     server_http_context::handler_t get_props;

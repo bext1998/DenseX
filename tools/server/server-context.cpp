@@ -4,6 +4,7 @@
 #include "server-decision.h"
 #include "server-http.h"
 #include "server-hardware.h"
+#include "server-request-log.h"
 #include "server-task.h"
 #include "server-queue.h"
 #include "server-schema.h"
@@ -987,6 +988,7 @@ public:
     json densex_last = nullptr;
     std::string densex_instance;
     std::unique_ptr<densex_hardware_sampler> densex_hardware;
+    std::unique_ptr<server_request_log> densex_requests;
     json densex_shared_baseline = nullptr;
 
     json densex_slot(const server_slot & slot, const char * scope) const {
@@ -1975,6 +1977,7 @@ private:
     }
 
     bool launch_slot_with_task(server_slot & slot, server_task && task) {
+        if (densex_requests) densex_requests->start_task(task.id);
         // process per-request lora adapters
         if (!task.params.lora.empty()) {
             auto task_loras = construct_lora_list(task.params.lora);
@@ -2291,10 +2294,14 @@ private:
     }
 
     void send_error(const server_slot & slot, const std::string & error, const enum error_type type = ERROR_TYPE_SERVER) {
+        if (densex_requests) densex_requests->end_task(slot.task->id,
+            type == ERROR_TYPE_SERVER ? "server_error" : "invalid_request", true, slot.stats.n_gen);
         send_error(slot.task->id, error, type, slot.task->n_tokens(), slot.n_ctx);
     }
 
     void send_error(const int id_task, const std::string & error, const enum error_type type = ERROR_TYPE_SERVER, const int32_t n_prompt_tokens = 0, const int32_t n_ctx = 0) {
+        if (densex_requests) densex_requests->end_task(id_task,
+            type == ERROR_TYPE_SERVER ? "server_error" : "invalid_request", false, 0);
         SRV_ERR("task id = %d, error: %s\n", id_task, error.c_str());
 
         if (type == ERROR_TYPE_EXCEED_CONTEXT_SIZE) {
@@ -2355,6 +2362,8 @@ private:
     }
 
     void send_final_response(server_slot & slot) {
+        if (densex_requests) densex_requests->end_task(slot.task->id,
+            slot.stop == STOP_TYPE_LIMIT ? "length" : "completed", true, slot.stats.n_gen);
         auto res = std::make_unique<server_task_result_cmpl_final>();
 
         res->id      = slot.task->id;
@@ -3341,12 +3350,16 @@ private:
             case SERVER_TASK_TYPE_CANCEL:
                 {
                     // release slot linked with the task id
+                    bool found = false;
                     for (auto & slot : slots) {
                         if (slot.task && slot.task->id == task.id_target) {
+                            if (densex_requests) densex_requests->end_task(task.id_target, "cancelled", true, slot.stats.n_gen);
+                            found = true;
                             slot.release();
                             break;
                         }
                     }
+                    if (!found && densex_requests) densex_requests->end_task(task.id_target, "cancelled", false, 0);
                 } break;
             case SERVER_TASK_TYPE_CONTROL:
                 {
@@ -5240,6 +5253,7 @@ bool server_context::load_model(common_params & params) {
     if (!impl->load_model(params)) return false;
     if (params.densex_telemetry) {
         impl->densex_instance = random_string();
+        impl->densex_requests = std::make_unique<server_request_log>(impl->densex_instance);
         impl->densex_hardware = std::make_unique<densex_hardware_sampler>();
         impl->densex_hardware->start();
     }
@@ -5336,6 +5350,14 @@ void server_context::set_state_callback(server_state_callback_t callback) {
     impl->callback_state = std::move(callback);
 }
 
+uint64_t server_context::request_log_begin(const char * endpoint) {
+    return impl->densex_requests ? impl->densex_requests->begin(endpoint) : 0;
+}
+
+void server_context::request_log_error(uint64_t id, bool invalid_request) {
+    if (impl->densex_requests) impl->densex_requests->fail_http(id, invalid_request ? "invalid_request" : "server_error");
+}
+
 //
 // server_routes
 //
@@ -5421,6 +5443,14 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             tasks.push_back(std::move(task));
         }
 
+        if (ctx_server.densex_requests && req.densex_request_id) {
+            std::vector<std::pair<int, uint64_t>> tracked;
+            for (const auto & task : tasks) {
+                tracked.emplace_back(task.id, task.n_tokens());
+                for (const auto & child : task.child_tasks) tracked.emplace_back(child.id, child.n_tokens());
+            }
+            ctx_server.densex_requests->enqueue(req.densex_request_id, tracked);
+        }
         rd.post_tasks(std::move(tasks), chat_session);
     } catch (const std::exception & e) {
         res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
@@ -5737,6 +5767,20 @@ json server_routes::get_model_info() const {
 void server_routes::init_routes() {
     // IMPORTANT: all lambda functions must start with create_response()
     // this is to ensure that the server_res_generator can handle sleeping case correctly
+
+    this->get_densex_requests = [this](const server_http_req &) {
+        auto res = create_response(true);
+        if (!params.densex_telemetry) {
+            res->status = 404;
+            res->data = R"({"error":"telemetry disabled"})";
+        } else if (!ctx_server.densex_requests) {
+            res->status = 503;
+            res->data = R"({"error":"telemetry not ready"})";
+        } else {
+            res->ok(ctx_server.densex_requests->snapshot());
+        }
+        return res;
+    };
 
     this->get_health = [this](const server_http_req &) {
         // error and loading states are handled by middleware

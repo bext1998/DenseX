@@ -203,8 +203,8 @@
 
 	// Initialize server properties on app load (run once)
 	$effect(() => {
-		// DenseX: connection help needs no model properties, which include local paths.
-		if (page.params.section === 'connections') return;
+		// DenseX: diagnostic views need no model properties, which include local paths.
+		if (page.params.section === 'connections' || page.params.section === 'requests') return;
 
 		// Only fetch if we don't already have props
 		if (!serverStore.props) {

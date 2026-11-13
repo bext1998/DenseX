@@ -90,6 +90,17 @@ static server_http_context::handler_t ex_wrapper(server_http_context::handler_t 
     };
 }
 
+static server_http_context::handler_t request_log_wrapper(server_http_context::handler_t func, server_context & ctx, const char * endpoint) {
+    auto wrapped = ex_wrapper(std::move(func));
+    return [wrapped = std::move(wrapped), &ctx, endpoint](const server_http_req & req) -> server_http_res_ptr {
+        req.densex_request_id = ctx.request_log_begin(endpoint);
+        auto res = wrapped(req);
+        if (req.densex_request_id) res->headers["X-DenseX-Request-Id"] = std::to_string(req.densex_request_id);
+        if (res->status >= 400) ctx.request_log_error(req.densex_request_id, res->status < 500);
+        return res;
+    };
+}
+
 int llama_server(int argc, char ** argv) {
     server_child child;
 
@@ -264,22 +275,23 @@ int llama_server(common_params & params, int argc, char ** argv, server_child & 
     ctx_http.get ("/v1/health",                ex_wrapper(routes.get_health)); // public endpoint (no API key check)
     ctx_http.get ("/metrics",                  ex_wrapper(routes.get_metrics));
     ctx_http.get ("/densex/telemetry",         ex_wrapper(routes.get_densex_telemetry));
+    ctx_http.get ("/densex/requests",          ex_wrapper(routes.get_densex_requests));
     ctx_http.get ("/props",                    ex_wrapper(routes.get_props));
     ctx_http.post("/props",                    ex_wrapper(routes.post_props));
     ctx_http.get ("/models",                   ex_wrapper(routes.get_models));
     ctx_http.get ("/v1/models",                ex_wrapper(routes.get_models));
-    ctx_http.post("/completion",               ex_wrapper(routes.post_completions)); // legacy
-    ctx_http.post("/completions",              ex_wrapper(routes.post_completions));
-    ctx_http.post("/v1/completions",           ex_wrapper(routes.post_completions_oai));
-    ctx_http.post("/chat/completions",         ex_wrapper(routes.post_chat_completions));
-    ctx_http.post("/v1/chat/completions",      ex_wrapper(routes.post_chat_completions));
+    ctx_http.post("/completion",               request_log_wrapper(routes.post_completions, ctx_server, "/completion"));
+    ctx_http.post("/completions",              request_log_wrapper(routes.post_completions, ctx_server, "/completions"));
+    ctx_http.post("/v1/completions",           request_log_wrapper(routes.post_completions_oai, ctx_server, "/v1/completions"));
+    ctx_http.post("/chat/completions",         request_log_wrapper(routes.post_chat_completions, ctx_server, "/chat/completions"));
+    ctx_http.post("/v1/chat/completions",      request_log_wrapper(routes.post_chat_completions, ctx_server, "/v1/chat/completions"));
     ctx_http.post("/v1/chat/completions/control", ex_wrapper(routes.post_control));
-    ctx_http.post("/v1/responses",             ex_wrapper(routes.post_responses_oai));
-    ctx_http.post("/responses",                ex_wrapper(routes.post_responses_oai));
-    ctx_http.post("/v1/audio/transcriptions",  ex_wrapper(routes.post_transcriptions_oai));
-    ctx_http.post("/audio/transcriptions",     ex_wrapper(routes.post_transcriptions_oai));
-    ctx_http.post("/v1/messages",              ex_wrapper(routes.post_anthropic_messages)); // anthropic messages API
-    ctx_http.post("/infill",                   ex_wrapper(routes.post_infill));
+    ctx_http.post("/v1/responses",             request_log_wrapper(routes.post_responses_oai, ctx_server, "/v1/responses"));
+    ctx_http.post("/responses",                request_log_wrapper(routes.post_responses_oai, ctx_server, "/responses"));
+    ctx_http.post("/v1/audio/transcriptions",  request_log_wrapper(routes.post_transcriptions_oai, ctx_server, "/v1/audio/transcriptions"));
+    ctx_http.post("/audio/transcriptions",     request_log_wrapper(routes.post_transcriptions_oai, ctx_server, "/audio/transcriptions"));
+    ctx_http.post("/v1/messages",              request_log_wrapper(routes.post_anthropic_messages, ctx_server, "/v1/messages"));
+    ctx_http.post("/infill",                   request_log_wrapper(routes.post_infill, ctx_server, "/infill"));
     ctx_http.post("/embedding",                ex_wrapper(routes.post_embeddings)); // legacy
     ctx_http.post("/embeddings",               ex_wrapper(routes.post_embeddings));
     ctx_http.post("/v1/embeddings",            ex_wrapper(routes.post_embeddings_oai));
