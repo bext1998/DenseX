@@ -196,6 +196,10 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         llama_build_and_test(test-kv-storage-contract.cpp LINK llama ggml-cpu LABEL cpu)
         target_include_directories(test-kv-storage-contract PRIVATE ${PROJECT_SOURCE_DIR}/src)
     endif()
+    # MTP drafting must honor the per-sequence draft cap too (issue #32); in-process
+    # qwen35 MTP fixture, CPU only, no model files
+    llama_build_and_test(test-mtp-seq-nmax.cpp LABEL cpu)
+    target_include_directories(test-mtp-seq-nmax PRIVATE ${PROJECT_SOURCE_DIR}/src)
     llama_build_and_test(test-chat.cpp WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
     target_include_directories(test-chat PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
     target_link_libraries(test-chat PRIVATE server-context)

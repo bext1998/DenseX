@@ -1852,7 +1852,11 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     dp.result_q->emplace_back(cur_p->data, cur_p->data + cur_p->size);
                 }
 
-                if (params.n_max <= (int) result.size()) {
+                // issue #32: stop as soon as either cap is reached, like draft-simple, so a
+                // sequence whose per-sequence limit (dp.n_max) is below the global limit does
+                // not queue draft decodes whose tokens the driver would truncate afterwards
+                if ((params.n_max <= (int) result.size()) ||
+                    (dp.n_max > 0 && dp.n_max <= (int) result.size())) {
                     drafting[seq_id] = false;
                     n_drafting--;
                     continue;
