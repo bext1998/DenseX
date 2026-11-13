@@ -1822,16 +1822,18 @@ private:
                     ret->prompt_clear();
                 }
 
-                // DenseX document cache: exact-match state on disk, survives a server restart. Only consulted when the
-                // RAM cache did not restore the whole prompt (a partial prefix is kept otherwise), and it clears the
-                // slot only after it has found a file for exactly these tokens.
-                if (ret->prompt.tokens.size() != task.tokens.size() && doc_cache_load(*ret, task.tokens)) {
-                    SRV_TRC("%s", "restored the prompt from the document cache\n");
-                }
-
                 prompt_cache->update();
 
                 SRV_TRC("prompt cache update took %.2f ms\n", (ggml_time_us() - t_start) / 1000.0);
+            }
+
+            // DenseX document cache: exact-match state on disk, survives a server restart and does not depend on the
+            // RAM prompt cache (--cache-ram 0 still allows it). Only consulted when the RAM cache did not restore the
+            // whole prompt (a partial prefix is kept otherwise), and doc_cache_load() clears the slot only after it has
+            // found a file for exactly these tokens.
+            if (!task.is_stateless() && ret->prompt.tokens.size() != task.tokens.size()
+                    && doc_cache_load(*ret, task.tokens)) {
+                SRV_TRC("%s", "restored the prompt from the document cache\n");
             }
         }
 
