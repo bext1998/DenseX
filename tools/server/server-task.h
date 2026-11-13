@@ -173,6 +173,7 @@ struct server_task {
     slot_action slot_action;
 
     // used by SERVER_TASK_TYPE_METRICS
+    bool densex_telemetry = false;
     bool metrics_reset_bucket = false;
 
     // used by SERVER_TASK_TYPE_DECISION
@@ -546,6 +547,11 @@ struct server_task_result_error : server_task_result {
 };
 
 // used by /metrics API
+struct server_task_result_densex_telemetry : server_task_result {
+    json data;
+    json to_json() override { return data; }
+};
+
 struct server_task_result_metrics : server_task_result {
     // these are immediate stats, not accumulated (server_metrics is cumulative)
     int n_processing_slots = 0;

@@ -684,6 +684,7 @@ struct common_params {
     bool endpoint_slots   = true;
     bool endpoint_props   = false; // only control POST requests, not GET
     bool endpoint_metrics = false;
+    bool densex_telemetry = false;
 
     // enable built-in tools
     std::vector<std::string> server_tools;

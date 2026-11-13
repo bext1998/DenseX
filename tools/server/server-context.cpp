@@ -3,6 +3,7 @@
 #include "server-common.h"
 #include "server-decision.h"
 #include "server-http.h"
+#include "server-hardware.h"
 #include "server-task.h"
 #include "server-queue.h"
 #include "server-schema.h"
@@ -27,6 +28,7 @@
 #include <random>
 #include <utility>
 #include <fstream>
+#include <chrono>
 
 // fix problem with std::min and std::max
 #if defined(_WIN32)
@@ -38,6 +40,19 @@
 #endif
 
 constexpr int HTTP_POLLING_SECONDS = 1;
+
+static int64_t densex_now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+static json densex_metric(const json & value, const char * scope, const char * unit, const char * window = "latest_snapshot") {
+    return json {{"available", true}, {"value", value}, {"scope", scope}, {"unit", unit}, {"window", window}};
+}
+
+static json densex_missing(const char * scope, const char * unit, const char * reason, const char * window = "latest_snapshot") {
+    return json {{"available", false}, {"value", nullptr}, {"scope", scope}, {"unit", unit}, {"window", window}, {"reason", reason}};
+}
 
 static common_speculative_output_limits server_output_limits(const common_params & params) {
     if (params.embedding ||
@@ -969,6 +984,77 @@ public:
     server_queue    queue_tasks;
     server_response queue_results;
 
+    json densex_last = nullptr;
+    std::string densex_instance;
+    std::unique_ptr<densex_hardware_sampler> densex_hardware;
+    json densex_shared_baseline = nullptr;
+
+    json densex_slot(const server_slot & slot, const char * scope) const {
+        const auto & s = slot.stats;
+        const bool last = std::string(scope) == "last_request";
+        const char * window = last ? "last_request_completed" : "current_request";
+        const char * average = last ? "last_request_average" : "current_request_average";
+        const auto & types = params_base.speculative.types;
+        // --spec-type appends to the default NONE entry; mixed drafters share counters.
+        const bool mtp = !params_base.speculative.has_synth() &&
+            std::find(types.begin(), types.end(), COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != types.end() &&
+            std::all_of(types.begin(), types.end(), [](common_speculative_type type) {
+                return type == COMMON_SPECULATIVE_TYPE_NONE || type == COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
+            });
+        const char * state = slot.state == SLOT_STATE_IDLE ? "idle" :
+            slot.state == SLOT_STATE_WAIT_OTHER ? "queued" :
+            slot.state == SLOT_STATE_GENERATING ? "generating" : "prompt";
+        return json {
+            {"slot_id", densex_metric(slot.id, scope, "id", window)},
+            {"state", densex_metric(state, scope, "state", window)},
+            {"context_used_tokens", densex_metric(slot.prompt.n_tokens(), scope, "tokens", window)},
+            {"context_capacity_tokens", densex_metric(slot.n_ctx, scope, "tokens", window)},
+            {"prompt_processed_tokens", densex_metric(s.n_prompt_processed, scope, "tokens", window)},
+            {"prompt_cached_tokens", densex_metric(s.n_prompt_cached, scope, "tokens", window)},
+            {"generated_tokens", densex_metric(s.n_gen, scope, "tokens", window)},
+            {"prompt_tokens_per_second", s.t_prompt_ms() > 0 ? densex_metric(s.n_prompt_tps(), scope, "tokens/s", average) : densex_missing(scope, "tokens/s", "prompt timing unavailable", average)},
+            {"generation_tokens_per_second", s.t_gen_us() > 0 && s.n_gen_steps() > 0 ? densex_metric(s.n_gen_tps(), scope, "tokens/s", average) : densex_missing(scope, "tokens/s", "generation timing unavailable", average)},
+            {"draft_tokens", densex_metric(s.n_draft_tokens, scope, "tokens", window)},
+            {"draft_accepted_tokens", densex_metric(s.n_draft_accepted, scope, "tokens", window)},
+            {"mtp_acceptance_rate", mtp && s.n_draft_tokens > 0 ? densex_metric(double(s.n_draft_accepted) / s.n_draft_tokens, scope, "ratio", window) : densex_missing(scope, "ratio", "MTP draft tokens unavailable", window)},
+        };
+    }
+
+    json densex_build_snapshot() {
+        const int64_t now = densex_now_ms();
+        json active = json::array();
+        int n_active = 0;
+        bool prompt = false;
+        bool generating = false;
+        for (const auto & slot : slots) {
+            if (!slot.is_processing()) continue;
+            ++n_active;
+            prompt |= slot.state == SLOT_STATE_STARTED || slot.state == SLOT_STATE_PROCESSING_PROMPT || slot.state == SLOT_STATE_DONE_PROMPT;
+            generating |= slot.state == SLOT_STATE_GENERATING;
+            active.push_back(densex_slot(slot, "current_request"));
+        }
+        const size_t queued = queue_tasks.queue_tasks_deferred_size();
+        const char * state = generating ? "generating" : prompt ? "prompt" : n_active || queued ? "queued" : "idle";
+        if (n_active == 0 && queued == 0 && densex_shared_baseline.is_null() && densex_hardware) {
+            const json hw = densex_hardware->snapshot();
+            if (hw.contains("metrics") && hw.at("metrics").contains("process_gpu_shared_bytes")) {
+                const json & shared = hw.at("metrics").at("process_gpu_shared_bytes");
+                if (shared.at("available").get<bool>()) densex_shared_baseline = shared.at("value");
+            }
+        }
+        return json {
+            {"schema_version", 1}, {"instance_id", densex_instance},
+            {"sampled_at", now}, {"server_sampled_at", now}, {"recommended_poll_interval_ms", 1000},
+            {"metrics", json {
+                {"state", densex_metric(state, "server", "state")},
+                {"active_slots", densex_metric(n_active, "server", "slots")},
+                {"queued_requests", densex_metric(queued, "deferred_queue", "requests")},
+                {"generation_phase", densex_missing("current_request", "state", "reasoning and final phase are not available in slot state")},
+            }},
+            {"slots", active}, {"last_request", densex_last}, {"shared_baseline", densex_shared_baseline},
+        };
+    }
+
     // note: chat_params must not be refreshed upon existing sleeping state
     server_chat_params chat_params;
 
@@ -1467,6 +1553,9 @@ private:
             };
 
             slot.callback_on_reset = [this](const server_slot & slot) {
+                if (params_base.densex_telemetry && slot.task) {
+                    densex_last = densex_slot(slot, "last_request");
+                }
                 // flush the generated token stats before reset()
                 if (slot.stats.n_gen > 0) {
                     metrics_on_prediction(slot);
@@ -3041,7 +3130,7 @@ private:
     // returns false to decline the task, it is offered again after the decode is done
     bool process_single_task(server_task && task, bool is_yielding) {
         // while yielding, an encode / decode is running and only reading the server state is safe
-        if (is_yielding && task.type != SERVER_TASK_TYPE_METRICS && task.type != SERVER_TASK_TYPE_SLOT_GET) {
+        if (is_yielding && (task.densex_telemetry || (task.type != SERVER_TASK_TYPE_METRICS && task.type != SERVER_TASK_TYPE_SLOT_GET))) {
             SRV_DBG("decoding, decline task, id_task = %d\n", task.id);
             return false;
         }
@@ -3168,6 +3257,13 @@ private:
                 } break;
             case SERVER_TASK_TYPE_METRICS:
                 {
+                    if (task.densex_telemetry) {
+                        auto res = std::make_unique<server_task_result_densex_telemetry>();
+                        res->id = task.id;
+                        res->data = densex_build_snapshot();
+                        queue_results.send(std::move(res));
+                        break;
+                    }
                     int n_processing_slots = 0;
 
                     for (server_slot & slot : slots) {
@@ -5011,7 +5107,13 @@ server_context::server_context() : impl(new server_context_impl()) {}
 server_context::~server_context() = default;
 
 bool server_context::load_model(common_params & params) {
-    return impl->load_model(params);
+    if (!impl->load_model(params)) return false;
+    if (params.densex_telemetry) {
+        impl->densex_instance = random_string();
+        impl->densex_hardware = std::make_unique<densex_hardware_sampler>();
+        impl->densex_hardware->start();
+    }
+    return true;
 }
 
 void server_context::start_loop() {
@@ -5516,6 +5618,54 @@ void server_routes::init_routes() {
         GGML_UNUSED(ctx_server);
 
         res->ok({{"status", "ok"}});
+        return res;
+    };
+
+    this->get_densex_telemetry = [this](const server_http_req & req) {
+        auto res = create_response(true);
+        if (!params.densex_telemetry) {
+            res->status = 404;
+            res->data = R"({"error":"telemetry disabled"})";
+            return res;
+        }
+        if (queue_tasks.is_sleeping() || !ctx_server.densex_hardware) {
+            res->status = 503;
+            res->data = R"({"error":"telemetry not ready"})";
+            return res;
+        }
+        server_task task(SERVER_TASK_TYPE_METRICS);
+        task.densex_telemetry = true;
+        task.id = res->rd.get_new_id();
+        res->rd.post_task(std::move(task), true);
+        auto result = res->rd.next([&] { return req.should_stop() || queue_tasks.is_sleeping(); });
+        if (!result) {
+            res->status = 503;
+            res->data = R"({"error":"telemetry not ready"})";
+            return res;
+        }
+        if (result->is_error()) {
+            res->error(result->to_json());
+            return res;
+        }
+        auto * telemetry = dynamic_cast<server_task_result_densex_telemetry *>(result.get());
+        GGML_ASSERT(telemetry != nullptr);
+        json out = telemetry->data;
+        json hw = ctx_server.densex_hardware->snapshot();
+        const json baseline = out.at("shared_baseline");
+        out.erase("shared_baseline");
+        json & m = hw["metrics"];
+        m["process_gpu_shared_baseline_bytes"] = baseline.is_null()
+            ? densex_missing("post_load_idle_baseline", "bytes", "no valid idle baseline yet", "post_load_idle_baseline")
+            : densex_metric(baseline, "post_load_idle_baseline", "bytes", "post_load_idle_baseline");
+        if (!baseline.is_null() && m.contains("process_gpu_shared_bytes") &&
+                m.at("process_gpu_shared_bytes").at("available").get<bool>()) {
+            const int64_t current = m.at("process_gpu_shared_bytes").at("value").get<int64_t>();
+            m["process_gpu_shared_delta_bytes"] = densex_metric(current - baseline.get<int64_t>(), "since_post_load_idle_baseline", "bytes", "since_post_load_idle_baseline");
+        } else {
+            m["process_gpu_shared_delta_bytes"] = densex_missing("since_post_load_idle_baseline", "bytes", "baseline or current sample unavailable", "since_post_load_idle_baseline");
+        }
+        out["hardware"] = std::move(hw);
+        res->data = out.dump_safe();
         return res;
     };
 
