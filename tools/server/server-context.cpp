@@ -258,6 +258,9 @@ struct server_slot {
     common_speculative * spec;
     bool mtp_kv_window = false;
 
+    // DenseX document cache: this prompt came from the doc cache, do not write it back
+    bool doc_cache_loaded = false;
+
     llama_tokens spec_draft;
 
     // draft candidates per token in spec_draft; only draft-simple and draft-mtp fill it
@@ -387,6 +390,7 @@ struct server_slot {
         SLT_DBG(*this, "%s", "\n");
 
         spec_is_replay = false;
+        doc_cache_loaded = false;
 
         last_nl_pos    = 0;
         generated      = {};
@@ -1032,6 +1036,14 @@ private:
 
     std::unique_ptr<server_prompt_cache> prompt_cache;
 
+    // DenseX document cache (issue #23, `--densex-doc-cache`). The post-prefill state of a prompt (target KV, context
+    // checkpoints, draft/speculative state - the same payload `--slot-save-path` writes) is stored as one file per
+    // token sequence and restored when the exact same sequence arrives again, so that a server restart pays a disk
+    // read instead of the prefill (120K ≈ 474 s on the reference machine). Off by default.
+    std::string doc_cache_path;           // empty = disabled
+    size_t      doc_cache_max_bytes  = 0; // 0 = no limit
+    size_t      doc_cache_min_tokens = 0;
+
     server_metrics metrics;
 
     // queued prompt stats - llama_decode() is async, so the timing is only valid after a sync
@@ -1520,6 +1532,14 @@ private:
         }
         SRV_TRC("%s", "for more info see https://github.com/ggml-org/llama.cpp/pull/16391\n");
 
+        doc_cache_path       = params_base.densex_doc_cache_path;
+        doc_cache_max_bytes  = params_base.densex_doc_cache_max_mib > 0 ? (size_t) params_base.densex_doc_cache_max_mib * 1024 * 1024 : 0;
+        doc_cache_min_tokens = params_base.densex_doc_cache_min_tokens > 0 ? (size_t) params_base.densex_doc_cache_min_tokens : 0;
+        if (!doc_cache_path.empty()) {
+            SRV_INF("document KV cache enabled, dir = %s, limit = %.1f MiB, min tokens = %zu\n",
+                    doc_cache_path.c_str(), (double) doc_cache_max_bytes / 1024 / 1024, doc_cache_min_tokens);
+        }
+
         if (params_base.n_ctx_checkpoints > 0) {
             SRV_TRC("context checkpoints enabled, max = %d, min spacing = %d\n",
                     params_base.n_ctx_checkpoints, params_base.checkpoint_min_step);
@@ -1800,6 +1820,13 @@ private:
 
                 if (!ret->prompt_load(*prompt_cache, task.tokens)) {
                     ret->prompt_clear();
+                }
+
+                // DenseX document cache: exact-match state on disk, survives a server restart. Only consulted when the
+                // RAM cache did not restore the whole prompt (a partial prefix is kept otherwise), and it clears the
+                // slot only after it has found a file for exactly these tokens.
+                if (ret->prompt.tokens.size() != task.tokens.size() && doc_cache_load(*ret, task.tokens)) {
+                    SRV_TRC("%s", "restored the prompt from the document cache\n");
                 }
 
                 prompt_cache->update();
@@ -2649,6 +2676,185 @@ private:
         if (n > 0) {
             ckpt_write(ofs, buf.data(), n, n_written);
         }
+    }
+
+    // ---- DenseX document cache (issue #23, `--densex-doc-cache`) --------------------------------------------
+    static uint64_t doc_cache_mix(uint64_t h, const void * data, size_t size) {
+        const uint8_t * p = (const uint8_t *) data;
+        for (size_t i = 0; i < size; ++i) {
+            h ^= p[i];
+            h *= 0x100000001b3ULL;
+        }
+        return h;
+    }
+
+    // Everything that changes the meaning of a stored state goes into the key: model, context size, KV types, draft /
+    // MTP configuration, and finally the prompt itself. Changing any of them (e.g. K4V4 -> q8_0) just misses the cache
+    // instead of restoring an incompatible state.
+    std::string doc_cache_key(const server_tokens & tokens) const {
+        std::string sig;
+        sig += "densex-doc-cache-v1\n";
+        sig += params_base.model.path + "\n";
+        sig += "n_ctx=" + std::to_string(params_base.n_ctx) + "\n";
+        sig += "kv=" + std::to_string((int) params_base.cache_type_k) + "," + std::to_string((int) params_base.cache_type_v) + "\n";
+        sig += "n_parallel=" + std::to_string(params_base.n_parallel) + "\n";
+        sig += "dft=" + (ctx_dft ? params_base.speculative.draft.mparams.path : std::string("none")) + "\n";
+        sig += "dft_n_max=" + std::to_string(params_base.speculative.draft.n_max) + "\n";
+        sig += "dft_kv_window=" + std::to_string(params_base.speculative.draft.kv_window) + "\n";
+        sig += "dft_kv=" + std::to_string((int) params_base.speculative.draft.cache_type_k) + "," +
+               std::to_string((int) params_base.speculative.draft.cache_type_v) + "\n";
+
+        uint64_t h = 0xcbf29ce484222325ULL;
+        h = doc_cache_mix(h, sig.data(), sig.size());
+        const llama_tokens & toks = tokens.get_tokens();
+        h = doc_cache_mix(h, toks.data(), toks.size()*sizeof(llama_token));
+
+        char buf[80];
+        snprintf(buf, sizeof(buf), "%016" PRIx64 "-%zu.bin", h, tokens.size());
+        return std::string(buf);
+    }
+
+    // Drop the oldest files until the cache fits into --densex-doc-cache-max-mib. `keep` is never evicted.
+    void doc_cache_evict(const std::string & keep) {
+        if (doc_cache_max_bytes == 0) {
+            return;
+        }
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        std::vector<std::pair<fs::file_time_type, std::pair<uintmax_t, fs::path>>> files;
+        uintmax_t total = 0;
+        for (const auto & e : fs::directory_iterator(fs::u8path(doc_cache_path), ec)) {
+            if (!e.is_regular_file(ec) || e.path().extension() != ".bin") {
+                continue;
+            }
+            const uintmax_t sz = e.file_size(ec);
+            total += sz;
+            files.emplace_back(e.last_write_time(ec), std::make_pair(sz, e.path()));
+        }
+        std::sort(files.begin(), files.end());
+        for (const auto & f : files) {
+            if (total <= doc_cache_max_bytes) {
+                break;
+            }
+            if (f.second.second == fs::u8path(keep)) {
+                continue;
+            }
+            const uintmax_t sz = f.second.first;
+            fs::remove(f.second.second, ec);
+            if (!ec) {
+                total -= sz;
+                SRV_TRC("document cache: evicted %s (%.1f MiB)\n", f.second.second.u8string().c_str(), (double) sz / 1024 / 1024);
+            }
+        }
+    }
+
+    // Store the state the slot holds right now. Called once the prompt has been evaluated, before sampling starts.
+    bool doc_cache_save(server_slot & slot) {
+        if (doc_cache_path.empty() || slot.doc_cache_loaded) {
+            return false;
+        }
+        if (slot.prompt.tokens.size() < doc_cache_min_tokens) {
+            return false;
+        }
+
+        const std::string key  = doc_cache_key(slot.prompt.tokens);
+        const std::string path = doc_cache_path + key;
+        std::error_code ec;
+        if (std::filesystem::exists(std::filesystem::u8path(path), ec)) {
+            SLT_TRC(slot, "document cache: %s already cached\n", key.c_str());
+            return false;
+        }
+
+        const int64_t t_start = ggml_time_us();
+        const std::string tmp = path + ".tmp";
+
+        std::vector<char> packed;
+        try {
+            packed = slot.prompt.tokens.serialize();
+        } catch (const std::exception & err) {
+            SLT_WRN(slot, "document cache: cannot serialize the prompt: %s\n", err.what());
+            return false;
+        }
+        GGML_ASSERT(packed.size() % sizeof(llama_token) == 0);
+
+        const size_t nwrite = llama_state_seq_save_file(ctx_tgt, tmp.c_str(), slot.id,
+                reinterpret_cast<const llama_token *>(packed.data()), packed.size() / sizeof(llama_token));
+        size_t n_ckpt = 0;
+        size_t n_dft  = 0;
+        if (nwrite == 0 || !save_slot_checkpoints(tmp, slot, n_ckpt) || !save_slot_draft(tmp, slot, n_dft)) {
+            SLT_WRN(slot, "document cache: could not write '%s'\n", tmp.c_str());
+            std::filesystem::remove(std::filesystem::u8path(tmp), ec);
+            return false;
+        }
+        // rename last: a half-written file must never be picked up by a later run
+        std::filesystem::rename(std::filesystem::u8path(tmp), std::filesystem::u8path(path), ec);
+        if (ec) {
+            SLT_WRN(slot, "document cache: cannot rename '%s' to '%s': %s\n", tmp.c_str(), path.c_str(), ec.message().c_str());
+            std::filesystem::remove(std::filesystem::u8path(tmp), ec);
+            return false;
+        }
+
+        doc_cache_evict(path);
+
+        SLT_INF(slot, "document cache: wrote '%s' (%zu tokens, %.1f MiB) in %.0f ms\n", key.c_str(),
+                slot.prompt.tokens.size(), (double) (nwrite + n_ckpt + n_dft) / 1024 / 1024,
+                (ggml_time_us() - t_start) / 1000.0);
+        return true;
+    }
+
+    // Restore the exact state of `tokens` from disk into `slot`. False means "not cached" or "unusable", in which case
+    // the slot is left empty and the request is prefilled as usual.
+    bool doc_cache_load(server_slot & slot, const server_tokens & tokens) {
+        if (doc_cache_path.empty() || tokens.size() == 0) {
+            return false;
+        }
+
+        const std::string key  = doc_cache_key(tokens);
+        const std::string path = doc_cache_path + key;
+        std::error_code ec;
+        if (!std::filesystem::exists(std::filesystem::u8path(path), ec)) {
+            SLT_TRC(slot, "document cache: '%s' not found (%zu request tokens)\n", key.c_str(), tokens.size());
+            return false;
+        }
+
+        const int64_t t_start = ggml_time_us();
+        slot.prompt_clear();
+
+        size_t n_packed = 0;
+        size_t nread = llama_state_seq_load_file(ctx_tgt, path.c_str(), slot.id, nullptr, 0, &n_packed);
+        if (nread == 0) {
+            SLT_WRN(slot, "document cache: '%s' does not fit into the context\n", key.c_str());
+            slot.prompt_clear();
+            return false;
+        }
+
+        llama_tokens packed;
+        packed.resize(std::max<size_t>(1, n_packed));
+        nread = llama_state_seq_load_file(ctx_tgt, path.c_str(), slot.id, packed.data(), packed.size(), &n_packed);
+        if (nread == 0) {
+            SLT_WRN(slot, "document cache: cannot read '%s'\n", key.c_str());
+            slot.prompt_clear();
+            return false;
+        }
+        packed.resize(n_packed);
+
+        server_tokens restored = server_tokens::deserialize(packed, mctx != nullptr);
+        if (restored.size() != tokens.size() || restored.get_tokens() != tokens.get_tokens() || !restored.validate(ctx_tgt)) {
+            SLT_WRN(slot, "document cache: '%s' holds a different prompt\n", key.c_str());
+            slot.prompt_clear();
+            return false;
+        }
+
+        slot.prompt.tokens = std::move(restored);
+        const size_t n_ckpt = load_slot_checkpoints(path, nread, slot);
+        const size_t n_dft  = load_slot_draft(path, nread + n_ckpt, slot);
+
+        slot.doc_cache_loaded = true;
+
+        SLT_INF(slot, "document cache: restored '%s' (%zu tokens, %.1f MiB, %.0f ms)\n", key.c_str(),
+                slot.prompt.tokens.size(), (double) (nread + n_ckpt + n_dft) / 1024 / 1024,
+                (ggml_time_us() - t_start) / 1000.0);
+        return true;
     }
 
     // returns false if the appendix could not be written completely
@@ -4460,6 +4666,9 @@ private:
 
                 // prompt evaluated for next-token prediction
                 slot.state = SLOT_STATE_GENERATING;
+
+                // DenseX document cache (#23): keep the post-prefill state for the next run of the same document
+                doc_cache_save(slot);
 
                 if (slot.can_speculate()) {
                     common_speculative_begin(spec.get(), slot.id, slot.prompt.tokens.get_text_tokens());

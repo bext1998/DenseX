@@ -3615,6 +3615,34 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_SLOT_SAVE_PATH"));
     add_opt(common_arg(
+        {"--densex-doc-cache"}, "PATH",
+        "DenseX: directory for the document KV cache - the post-prefill state of a prompt is written there and\n"
+        "restored when the exact same token sequence arrives again (default: disabled)",
+        [](common_params & params, const std::string & value) {
+            params.densex_doc_cache_path = value;
+            if (!fs_is_directory(params.densex_doc_cache_path)) {
+                throw std::invalid_argument("not a directory: " + value);
+            }
+            if (!params.densex_doc_cache_path.empty() && params.densex_doc_cache_path[params.densex_doc_cache_path.size() - 1] != DIRECTORY_SEPARATOR) {
+                params.densex_doc_cache_path += DIRECTORY_SEPARATOR;
+            }
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DENSEX_DOC_CACHE"));
+    add_opt(common_arg(
+        {"--densex-doc-cache-max-mib"}, "N",
+        string_format("DenseX: size limit of the document KV cache in MiB, oldest files are evicted first (default: %d)", params.densex_doc_cache_max_mib),
+        [](common_params & params, int value) {
+            params.densex_doc_cache_max_mib = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DENSEX_DOC_CACHE_MAX_MIB"));
+    add_opt(common_arg(
+        {"--densex-doc-cache-min-tokens"}, "N",
+        string_format("DenseX: do not cache prompts shorter than this many tokens (default: %d)", params.densex_doc_cache_min_tokens),
+        [](common_params & params, int value) {
+            params.densex_doc_cache_min_tokens = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DENSEX_DOC_CACHE_MIN_TOKENS"));
+    add_opt(common_arg(
         {"--media-path"}, "PATH",
         "directory for loading local media files; files can be accessed via file:// URLs using relative paths (default: disabled)",
         [](common_params & params, const std::string & value) {

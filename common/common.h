@@ -705,6 +705,12 @@ struct common_params {
     std::string slot_save_path;
     std::string media_path; // path to directory for loading media files
 
+    // DenseX document cache (issue #23): keep the post-prefill state of a document on disk and restore it when the
+    // exact same token sequence arrives again. Empty path = disabled, which is the default.
+    std::string densex_doc_cache_path;
+    int32_t     densex_doc_cache_max_mib  = 16384; // evict the oldest files above this size
+    int32_t     densex_doc_cache_min_tokens = 1024; // do not bother with short prompts (the RAM cache covers them)
+
     float slot_prompt_similarity = 0.1f;
 
     // batched-bench params
