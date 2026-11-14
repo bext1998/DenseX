@@ -1957,10 +1957,14 @@ std::vector<common_speculative_type> common_speculative_types_from_names(const s
     std::vector<common_speculative_type> types;
     types.reserve(names.size());
 
+    // reject the removed type anywhere in the list, before "none" returns early
     for (const auto & name : names) {
         if (name == "draft-eagle3") {
             throw std::invalid_argument("draft-eagle3 is not supported by DenseX (use draft-mtp or draft-dflash)");
         }
+    }
+
+    for (const auto & name : names) {
         auto type = common_speculative_type_from_name_map.find(name);
         if (type != common_speculative_type_from_name_map.end()) {
             if (type->second == COMMON_SPECULATIVE_TYPE_NONE) {
