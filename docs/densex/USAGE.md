@@ -64,8 +64,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Server exited with an error' }
 
 Set `$server` to your named-build output if needed. Send the smoke request in
 INSTALL to confirm startup; a short request alone does not validate 128K quality.
-The exact API smoke sequence remains **untested** in this documentation-only
-change. Historical speed and quality results are identified separately below.
+This exact API smoke sequence is **untested** in build-only checks. Historical
+speed and quality results are listed separately below.
 
 `-ot` keeps the listed FFN weights in pinned host RAM. With `--load-mode none`,
 `GGML_OP_OFFLOAD_MIN_BATCH=1`, and prefetch 4, those weights are streamed back to
@@ -237,7 +237,7 @@ build fell to 3.4–3.5 tok/s under the same environment, while dedicated VRAM w
 near its limit. Other desktop applications used additional VRAM. Recovery after
 closing them was **unconfirmed**, so do not claim a guaranteed fix.
 
-Shared memory alone does not establish overflow: pinned host weights are
+Shared GPU memory alone does not indicate VRAM overflow: pinned host weights are
 intentional in the streaming setup. Look for growth relative to the same setup's
 baseline together with a slowdown. Do not kill unrelated applications or change
 driver settings without the user's authorization. Retest after the user frees
@@ -262,6 +262,7 @@ the first token. Distinguish loading, prefill, reasoning, and final content.
 
 The README preserves C34's public speed table. The private research log recorded
 L1 (short-context table) on 2026-11-11 and SLOW1 (slowdown investigation) on
-2026-11-12. The model/tier estimates and MTP header survey came from the private `QUANT_TIERS_VRAM.md` research record (2026-11-12, no GPU run). Those logs are not included in this public checkout. This page
-transcribes those measurements with their conditions; it adds no new runtime
-measurement. For quality scores and their limits, use [QUALITY](QUALITY.md).
+2026-11-12. The model/tier estimates and MTP header survey came from the private `QUANT_TIERS_VRAM.md` research record (2026-11-12, no GPU run). Those logs are
+not in this public repository; this page records their conditions and
+measurements without adding new runtime runs. For quality scores and their
+limits, use [QUALITY](QUALITY.md).

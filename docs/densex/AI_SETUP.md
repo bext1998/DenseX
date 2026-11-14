@@ -111,10 +111,9 @@ Success requires `/health` HTTP 200 with `status: ok` **and a nonempty final
 answer** from `/v1/chat/completions`. Loading returns 503. Do not call it working
 merely because the process exists or the CUDA build succeeded.
 
-This documentation change checked the build, not GPU inference. These API
-smoke commands are **untested in that check** and must be executed during an
-actual setup before reporting runtime success. Do not run them during another
-worker's GPU job.
+Only the build was checked here, not GPU inference. These API smoke commands
+are **untested** and must be run during an actual setup before reporting runtime
+success. Do not run them during another worker's GPU job.
 
 ## 5. Apply the requested context and verify again
 
@@ -140,8 +139,8 @@ local observation rather than borrowing the README's speed.
 - Do not edit, re-quantize, truncate, or delete model files, including hard links.
 - Do not install another inference framework or silently change model precision,
   context length, prompt contents, or attention coverage to make setup pass.
-- Do not modify source code, Git configuration, or another person's uncommitted
-  work merely to install. Do not commit, push, or merge without authorization.
+- Do not modify source code, Git configuration, or someone else's uncommitted
+  work just to get an install to pass. Do not commit, push, or merge without authorization.
 - Do not delete caches/builds or stop unrelated GPU applications without consent.
 - Do not expose the API beyond loopback or transmit user documents externally as
   part of a local smoke check.

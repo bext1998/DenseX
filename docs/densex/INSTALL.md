@@ -20,8 +20,8 @@ not a runtime performance guarantee.
   model, context, and host-weight placement. The examples target 12 GB VRAM
   and 32 GB RAM; they are not minimum-memory guarantees.
 - Disk space for the source, CUDA build output, and model. The selected model
-  alone is about 10.44 GB according to its publisher; leave additional space
-  for the build rather than treating model size as the total requirement.
+  alone is about 10.44 GB according to its publisher; leave extra space for the
+  source and build output.
 
 Keep the checkout, model, and build paths ASCII-only. Do not run a build while
 another inference measurement is using the computer.
@@ -213,7 +213,7 @@ Use it with this model family; it is not a universal ranking for other tokenizer
 Run from the checkout root in a dedicated PowerShell terminal. The following
 uses a 16384-token context and keeps all transformer layers on the GPU. It is
 based on the measured short-context configuration; see [USAGE](USAGE.md#short-context).
-It does not allocate the 128K context merely to answer a short prompt.
+It avoids allocating a 128K context just for a short prompt.
 
 ```powershell
 $server = '.\build\sm86\bin\llama-server.exe'
@@ -251,9 +251,8 @@ second server on another port to work around insufficient memory.
 
 ## 4. Verify from a second PowerShell terminal
 
-These are normal API operations implemented by the server. The documentation
-change was build-checked only; this exact smoke request is **untested** in that
-check and is a step for the installer to execute.
+These are standard server API endpoints. This exact smoke request is **untested**
+in build-only checks; run it during installation to verify.
 
 ```powershell
 $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8080/health'

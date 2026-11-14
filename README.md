@@ -5,7 +5,7 @@
   </picture>
 </h1>
 
-State of The Art for Dense Model Inference at Home.
+State of the art for dense model inference at home.
 
 DenseX is an experimental inference engine for running large **dense** models on low-VRAM consumer GPUs at long context. Its primary model scope is the full Qwen 3.8 27B **GSQ-RCO** range, including ISTA-DASLab's original tiers and GSQ-RCO variants such as Swift 1.5. **Unsloth Dynamic v3.1**, across its full tier range, is the second series added in [#24](https://github.com/bext1998/DenseX/issues/24).
 
@@ -13,7 +13,7 @@ The results below use **Swift 1.5 IQ3_XXS-mtp on an RTX 3060 12 GB** as the meas
 
 DenseX started from [llama.cpp](https://github.com/ggml-org/llama.cpp) commit `620d2225` and is now an independent project: it does not track or merge upstream.
 
-> **Status: research / experimental.** Tested only on Windows 11 + RTX 3060 12 GB + Ryzen 5 3600X (32 GB RAM). Most DenseX features are opt-in switches, off by default. The code base is being cleaned up (unused backends and model architectures will be removed).
+> **Status: research / experimental.** Tested only on Windows 11 + RTX 3060 12 GB + Ryzen 5 3600X (32 GB RAM). Most DenseX features are opt-in switches, off by default. The codebase is being cleaned up (unused backends and model architectures will be removed).
 
 ## Guides
 
@@ -79,9 +79,9 @@ This is the configuration of the results table (thinking off, 512 generated toke
 
 MIT, see [LICENSE](LICENSE). DenseX modifications Copyright (c) 2026 mazemaze. DenseX is based on llama.cpp / ggml (Copyright (c) 2023-2026 The ggml authors, MIT). The original llama.cpp README is kept in [docs/README.llama.cpp.md](docs/README.llama.cpp.md).
 
-Design references (ideas studied, re-implemented in DenseX's own way): Mirai S server (MIT, Copyright (c) 2026 Cary Palmer), Strata (MIT).
+Design references (ideas studied and re-implemented in DenseX): Mirai S server (MIT, Copyright (c) 2026 Cary Palmer), Strata (MIT).
 
-**About the contributor count:** This repository was created from a clone of llama.cpp, and its history was later rewritten so that `main` starts from a single commit importing llama.cpp `620d2225`. GitHub's sidebar may still show the contributor count cached from the original llama.cpp history (about 300). Those people are the authors of llama.cpp / ggml, not of DenseX's own changes. Their work is credited above and in [AUTHORS](AUTHORS). The commits in this repository are listed by `git shortlog -sn`.
+**About the contributor count:** This repository was created from a clone of llama.cpp, and its history was later rewritten so that `main` starts from a single commit importing llama.cpp `620d2225`. GitHub's sidebar may still show the contributor count cached from the original llama.cpp history (about 300). Those are the authors of llama.cpp / ggml, not of DenseX's changes. Their work is credited above and in [AUTHORS](AUTHORS). The commits in this repository are listed by `git shortlog -sn`.
 
 ## 繁體中文摘要
 

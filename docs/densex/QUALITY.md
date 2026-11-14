@@ -51,9 +51,8 @@ counts partially correct answers; it is not the exact-pass rate.
 | K8V4 | 14/18 | 13/16 | 0.929 |
 | K4V4 | 15/18 | 14/16 | 0.940 |
 
-The comparable 16 exclude the two standard summary L3 cases so the denominator
-matches earlier research comparisons. They are not 16 selected successes.
-Sixteen of the 18 final answers matched across cache settings. Both settings
+The comparable-16 subset excludes the two standard summary L3 cases to match
+earlier research comparisons, not to cherry-pick 16 passes. Sixteen of the 18 final answers matched across cache settings. Both settings
 failed compare hard L1 at both seeds and summary L3 at seed 20260917. K8V4
 also failed aggregate standard L3 at seed 20260905, which K4V4 answered correctly.
 
@@ -76,7 +75,7 @@ uses MTP-12, 16 host FFN layers, draft window 32768, ranked draft vocabulary
 Q2 used MTP-8, 27 host layers, and thinking medium. Its 15/18 score is not a
 new quality test of the C34 configuration or of this checkout. Long-context
 quality at other memory sizes, 256K, and other model quantizations is
-**untested** in this documented comparison.
+**untested**.
 
 ## Measurement record and reproduction limits
 
@@ -91,8 +90,7 @@ The raw result filenames are:
 These inputs, runners, and raw results remain in the private research workspace;
 they are **not bundled in this public engine repository**. This page preserves
 the recorded settings and results, but a fresh clone cannot reproduce those
-scores from the documentation alone. No new GPU quality run was performed for
-this documentation change.
+scores from the documentation alone. No new GPU quality run was performed here.
 
 For a future comparable run, retain the same complete prompts, seeds, expected
 fields, medium effort, thinking/output budgets, and scoring rules. Record the
