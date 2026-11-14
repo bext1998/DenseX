@@ -24,7 +24,9 @@
 #include <algorithm>
 #include <cstddef>
 #include <cinttypes>
+#include <cstdlib>
 #include <exception>
+#include <map>
 #include <memory>
 #include <filesystem>
 #include <random>
@@ -68,6 +70,83 @@ static common_speculative_output_limits server_output_limits(const common_params
     result.total   = std::max<int32_t>(1, result.total);
     result.per_seq = std::max<int32_t>(1, result.per_seq);
     return result;
+}
+
+// DenseX #66: DENSEX_LOGITS_ARGMAX (default off).
+//
+// Spec verification reads one full-vocab logits row per output token: with the measured config that is
+// 13 x 248320 x 4 B = 12.9 MB D2H per verify forward (~0.9 ms of the ~8-12 ms of GPU idle). When a
+// request can only ever need the argmax of each row, truncate to top-k on the backend instead so
+// decode() skips the raw-logits copy: the sampled token and the top-k rows come back (a few hundred
+// bytes) and the backend-token fast path in common_sampler_sample() returns the argmax directly.
+// The switch only engages when nothing can need the full distribution (see densex_logits_argmax_only).
+static bool densex_logits_argmax_enabled() {
+    static const bool on = [] {
+        const char * e = getenv("DENSEX_LOGITS_ARGMAX");
+        return e != nullptr && atoi(e) != 0;
+    }();
+    return on;
+}
+
+static int densex_logits_argmax_k(const common_params_sampling & s) {
+    return std::max(1, std::min(s.top_k > 0 ? s.top_k : 40, 64));
+}
+
+static bool densex_logits_argmax_only(const common_params_sampling & s) {
+    // greedy: only the argmax of an output row can ever be selected (same test as common_sampler_init)
+    const bool greedy = s.n_probs == 0 && !s.samplers.empty() &&
+        ((s.samplers.back() == COMMON_SAMPLER_TYPE_TEMPERATURE && s.temp == 0.0f && s.dynatemp_range == 0.0f) ||
+         (s.samplers.back() == COMMON_SAMPLER_TYPE_TOP_K       && s.top_k == 1));
+
+    if (!greedy || s.backend_sampling) {
+        return false;
+    }
+
+    // anything that can select, demote or promote a token outside the backend top-k still needs the
+    // full distribution, and the backend-token fast path skips the CPU chain altogether:
+    if (s.grammar.type != COMMON_GRAMMAR_TYPE_NONE) {
+        return false;                                   // grammar rejection sampling re-runs the chain
+    }
+    if (!s.logit_bias.empty()) {
+        return false;                                   // a positive bias can promote a token below the top-k
+    }
+    if (s.penalty_repeat != 1.0f || s.penalty_freq != 0.0f || s.penalty_present != 0.0f) {
+        return false;                                   // penalties demote tokens inside the top-k
+    }
+    if (s.dry_multiplier != 0.0f) {
+        return false;
+    }
+    if (s.xtc_probability != 0.0f) {
+        return false;                                   // XTC drops tokens at random
+    }
+    if (s.top_n_sigma != -1.0f || s.typ_p != 1.0f) {
+        return false;                                   // both can drop the argmax itself
+    }
+    // reasoning budget sampler (same condition as common_sampler_init)
+    if (!s.reasoning_budget_start.empty() && !s.reasoning_budget_end.empty() &&
+        (s.grammar_lazy || s.reasoning_budget_tokens >= 0 || s.reasoning_control)) {
+        return false;
+    }
+
+    return true;
+}
+
+// backend chain: top_k(k) then argmax. top_k keeps the argmax of the row, so the token is identical to
+// today's CPU chain (whose first truncation is top_k too), while the copy back shrinks from n_vocab to k.
+// One chain per k, kept for the process lifetime (stateless samplers, safe to share across seq ids).
+static llama_sampler * densex_logits_argmax_chain(int k) {
+    static std::map<int, llama_sampler *> chains;
+
+    auto it = chains.find(k);
+    if (it != chains.end()) {
+        return it->second;
+    }
+
+    llama_sampler * chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    llama_sampler_chain_add(chain, llama_sampler_init_top_k(k));
+    llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+    chains[k] = chain;
+    return chain;
 }
 
 // a checkpoint restore dropped tokens the target had accepted - re-accept them rather than verify again
@@ -2079,9 +2158,24 @@ private:
             // TODO: getting pre sampling logits is not yet supported with backend sampling
             use_backend_sampling &= !need_pre_sample_logits;
 
+            // DenseX #66: DENSEX_LOGITS_ARGMAX (default off) - truncate to top-k on the backend so
+            // decode() skips the full-vocab logits D2H. Only when nothing needs that distribution.
+            const bool argmax_only = !use_backend_sampling
+                && densex_logits_argmax_enabled()
+                && !task.params.post_sampling_probs                   // reads the pre-sampling distribution
+                && task.decision.labels.empty()                       // reads raw logits per label
+                && densex_logits_argmax_only(task.params.sampling);
+
             // TODO: tmp until backend sampling is fully implemented
             if (use_backend_sampling) {
                 llama_set_sampler(ctx_tgt, slot.id, common_sampler_get(slot.smpl.get()));
+            } else if (argmax_only) {
+                const int k = densex_logits_argmax_k(task.params.sampling);
+                if (llama_set_sampler(ctx_tgt, slot.id, densex_logits_argmax_chain(k))) {
+                    SLT_INF(slot, "DENSEX_LOGITS_ARGMAX: backend top_k=%d + argmax, full logits D2H skipped (#66)", k);
+                } else {
+                    SLT_WRN(slot, "DENSEX_LOGITS_ARGMAX: backend top_k=%d not accepted, keeping the full logits path (#66)", k);
+                }
             } else {
                 llama_set_sampler(ctx_tgt, slot.id, nullptr);
             }
