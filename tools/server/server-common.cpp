@@ -1453,6 +1453,11 @@ json oaicompat_chat_params_parse(
     inputs.messages               = common_chat_msgs_parse_oaicompat(messages);
     inputs.tools                  = common_chat_tools_parse_oaicompat(tools);
     inputs.tool_choice            = common_chat_tool_choice_parse_oaicompat(tool_choice);
+    if (inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_NONE) {
+        // Do not inject tool definitions into the prompt when tool_choice is "none",
+        // otherwise the model still emits raw <tool_call> markup into content (issue #68).
+        inputs.tools.clear();
+    }
     inputs.json_schema            = json_schema.is_null() ? "" : json_schema.dump();
     inputs.grammar                = grammar;
     inputs.use_jinja              = opt.use_jinja;
