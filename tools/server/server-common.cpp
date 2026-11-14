@@ -1266,6 +1266,83 @@ server_tokens tokenize_oai_content_array(const llama_vocab * vocab, mtmd_context
     return process_mtmd_prompt(mctx, prompt, files, init_opt);
 }
 
+// OpenAI's object form of "tool_choice": {"type": "function", "function": {"name": "X"}}.
+// The string forms (auto / none / required) are untouched; the object form is enforced by narrowing the tool list to X
+// and switching the choice to "required". A malformed object, or a name that was not supplied in "tools", is an invalid
+// request (HTTP 400) instead of the previous silent fallback to "auto" (issue #67).
+static std::string oaicompat_tool_function_name(const json & tool) {
+    if (tool.is_object()) {
+        if (tool.contains("function") && tool.at("function").is_object()) {
+            const auto & fn = tool.at("function");
+            if (fn.contains("name") && fn.at("name").is_string()) {
+                return fn.at("name").get<std::string>();
+            }
+        }
+        if (tool.contains("name") && tool.at("name").is_string()) {
+            return tool.at("name").get<std::string>();
+        }
+    }
+    return std::string();
+}
+
+static void oaicompat_apply_tool_choice_object(const json & body, json & tools, std::string & tool_choice) {
+    if (!body.contains("tool_choice") || !body.at("tool_choice").is_object()) {
+        return; // absent, or one of the string forms: keep the existing behaviour
+    }
+    const json & choice = body.at("tool_choice");
+
+    const std::string type = (choice.contains("type") && choice.at("type").is_string())
+            ? choice.at("type").get<std::string>() : std::string();
+    if (type != "function") {
+        throw std::invalid_argument("invalid tool_choice object: \"type\" must be \"function\""
+                + (type.empty() ? std::string(" (missing)") : " (got \"" + type + "\")")
+                + "; supported forms: \"auto\", \"none\", \"required\" or "
+                  "{\"type\":\"function\",\"function\":{\"name\":\"<function name>\"}}");
+    }
+
+    std::string name;
+    if (choice.contains("function")) {
+        const json & fn = choice.at("function");
+        if (!fn.is_object()) {
+            throw std::invalid_argument("invalid tool_choice object: \"function\" must be an object");
+        }
+        if (fn.contains("name")) {
+            if (!fn.at("name").is_string()) {
+                throw std::invalid_argument("invalid tool_choice object: \"function.name\" must be a string");
+            }
+            name = fn.at("name").get<std::string>();
+        }
+    } else if (choice.contains("name") && choice.at("name").is_string()) {
+        name = choice.at("name").get<std::string>(); // tolerated: "name" next to "type"
+    }
+    if (name.empty()) {
+        throw std::invalid_argument("invalid tool_choice object: missing \"function.name\"");
+    }
+
+    if (!tools.is_array() || tools.empty()) {
+        throw std::invalid_argument("tool_choice names function \"" + name + "\" but the request has no tools");
+    }
+
+    json narrowed = json::array();
+    std::string available;
+    for (const auto & tool : tools) {
+        const std::string tool_name = oaicompat_tool_function_name(tool);
+        if (!available.empty()) {
+            available += ", ";
+        }
+        available += tool_name.empty() ? std::string("(unnamed)") : tool_name;
+        if (tool_name == name) {
+            narrowed.push_back(tool);
+        }
+    }
+    if (narrowed.empty()) {
+        throw std::invalid_argument("tool_choice names unknown function \"" + name + "\"; supplied tools: " + available);
+    }
+
+    tools       = narrowed;
+    tool_choice = "required";
+}
+
 // used by /chat/completions endpoint
 json oaicompat_chat_params_parse(
     const llama_vocab * vocab,
@@ -1279,7 +1356,18 @@ json oaicompat_chat_params_parse(
     auto tools = json_value(body, "tools", json());
     auto has_tools = tools.is_array() && !tools.empty();
     auto stream = json_value(body, "stream", false);
-    auto tool_choice = json_value(body, "tool_choice", std::string("auto"));
+    // "tool_choice" is either a string (auto / none / required) or an object naming one function. It is parsed here
+    // instead of through json_value() so that the object form does not log a bogus "wrong type" warning before
+    // oaicompat_apply_tool_choice_object() handles it; any other JSON type is an invalid request.
+    std::string tool_choice = "auto";
+    if (body.contains("tool_choice") && !body.at("tool_choice").is_null()) {
+        const json & choice = body.at("tool_choice");
+        if (choice.is_string()) {
+            tool_choice = choice.get<std::string>();
+        } else if (!choice.is_object()) {
+            throw std::invalid_argument("invalid tool_choice: expected a string or an object, got " + choice.dump());
+        }
+    }
 
     if (!opt.use_jinja) {
         if (has_tools) {
@@ -1289,6 +1377,8 @@ json oaicompat_chat_params_parse(
             throw std::runtime_error("tool_choice param requires --jinja flag");
         }
     }
+
+    oaicompat_apply_tool_choice_object(body, tools, tool_choice);
 
     // Handle "stop" field
     if (body.contains("stop") && body.at("stop").is_string()) {
