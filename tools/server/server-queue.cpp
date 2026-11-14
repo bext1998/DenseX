@@ -319,7 +319,7 @@ void server_queue::start_loop(int64_t idle_sleep_ms) {
         QUE_DBG("%s", "waiting for new tasks\n");
         while (true) {
             std::unique_lock<std::mutex> lock(mutex_tasks);
-            if (!running || !queue_tasks.empty()) {
+            if (!running || !queue_tasks.empty() || update_requested.exchange(false)) {
                 break; // go back to process new tasks or terminate
             }
 
@@ -352,7 +352,7 @@ void server_queue::start_loop(int64_t idle_sleep_ms) {
             } else {
                 // wait for new tasks or timeout for checking sleeping condition
                 bool res = condition_tasks.wait_for(lock, max_wait_time, [&]{
-                    return (!queue_tasks.empty() || !running);
+                    return (!queue_tasks.empty() || !running || update_requested.load());
                 });
                 if (res) {
                     break; // new task arrived or terminate

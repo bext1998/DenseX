@@ -1,5 +1,24 @@
 # LLaMA.cpp HTTP Server
 
+## DenseX experimental background document cache
+
+`--densex-doc-cache-async` (`LLAMA_ARG_DENSEX_DOC_CACHE_ASYNC=1`) is off by default and requires
+`--densex-doc-cache PATH`. It captures the complete prompt-boundary state on the model thread, then writes
+an owning host snapshot in a background thread. GPU readback and snapshot copying still precede generation;
+this option does not promise a first-token latency improvement.
+
+Only one capture/write may be in flight, with a 3072 MiB snapshot cap and at least 2048 MiB physical RAM
+headroom required. Busy, oversized or failed captures skip caching without a synchronous fallback. A reply
+may finish before the cache is ready: wait for `document cache: async ready` or the final `.bin` file before
+restarting. The writer never accesses live contexts or slots. Cancellation and slot reuse do not cancel an
+already captured valid prompt. Graceful shutdown/sleep drains the writer; forced termination may leave
+temporary files, which are ignored. Write/publish failures retain temporary files for inspection.
+
+The loader accepts both legacy synchronous files and versioned detached containers, including the existing
+token sidecars for prefix hits. Detached restore stages the target blob in RAM and releases it before
+restoring appendices. Each cache directory supports one writing server process; flush/rename is not a
+power-loss durability guarantee. Without this option the existing synchronous writer remains in use.
+
 Fast, lightweight, pure C/C++ HTTP server based on [httplib](https://github.com/yhirose/cpp-httplib), [nlohmann::json](https://github.com/nlohmann/json) and **llama.cpp**.
 
 Set of LLM REST APIs and a web UI to interact with llama.cpp.

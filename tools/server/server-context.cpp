@@ -2,6 +2,7 @@
 #include "server-chat.h"
 #include "server-common.h"
 #include "server-decision.h"
+#include "server-doc-cache.h"
 #include "server-http.h"
 #include "server-hardware.h"
 #include "server-request-log.h"
@@ -1131,6 +1132,7 @@ private:
     std::string doc_cache_path;           // empty = disabled
     size_t      doc_cache_max_bytes  = 0; // 0 = no limit
     size_t      doc_cache_min_tokens = 0;
+    std::unique_ptr<server_doc_cache_writer> doc_cache_writer;
 
     server_metrics metrics;
 
@@ -1154,6 +1156,12 @@ private:
     int64_t t_last_load_progress_ms = 0;
 
     void destroy() {
+        // DenseX: join before destroying contexts/queues, including sleep and reload.
+        if (doc_cache_writer) {
+            doc_cache_writer->shutdown();
+            doc_cache_publish();
+            doc_cache_writer.reset();
+        }
         spec.reset();
         spec_init.reset();
 
@@ -1627,6 +1635,10 @@ private:
         doc_cache_max_bytes  = params_base.densex_doc_cache_max_mib > 0 ? (size_t) params_base.densex_doc_cache_max_mib * 1024 * 1024 : 0;
         doc_cache_min_tokens = params_base.densex_doc_cache_min_tokens > 0 ? (size_t) params_base.densex_doc_cache_min_tokens : 0;
         if (!doc_cache_path.empty()) {
+            if (params_base.densex_doc_cache_async) {
+                doc_cache_writer = std::make_unique<server_doc_cache_writer>([&queue = queue_tasks] { queue.request_update(); });
+                SRV_INF("%s", "document cache: async enabled, one job, 3072 MiB snapshot cap, 2048 MiB RAM headroom\n");
+            }
             SRV_INF("document KV cache enabled, dir = %s, limit = %.1f MiB, min tokens = %zu\n",
                     doc_cache_path.c_str(), (double) doc_cache_max_bytes / 1024 / 1024, doc_cache_min_tokens);
         }
@@ -2894,6 +2906,10 @@ private:
             }
             std::string bin = e.path().u8string();
             bin.resize(bin.size() - 4); // drop ".tok"
+            // DenseX: .bin is the publication marker; orphan/early sidecars are never candidates.
+            if (fs::u8path(bin).extension() != ".bin" || !fs::is_regular_file(fs::u8path(bin), ec)) {
+                continue;
+            }
 
             std::vector<llama_token> toks;
             if (!doc_cache_read_tokens(bin, toks)) {
@@ -2954,6 +2970,84 @@ private:
         }
     }
 
+    // DenseX: called only at model-thread safe boundaries; worker never publishes or evicts.
+    void doc_cache_publish() {
+        if (!doc_cache_writer) {
+            return;
+        }
+        auto done = doc_cache_writer->take_result();
+        if (!done) {
+            return;
+        }
+        if (!server_doc_cache_writer::publish(*done)) {
+            SRV_WRN("document cache: async write/publish failed for '%s': %s (temporary files retained)\n",
+                    done->path.c_str(), done->error.c_str());
+            return;
+        }
+        doc_cache_evict(done->path);
+        SRV_INF("document cache: async ready '%s' (%.1f MiB)\n", done->path.c_str(), double(done->bytes) / 1024 / 1024);
+    }
+
+    bool doc_cache_capture(server_slot & slot, const std::string & path) {
+        bool reserved = false;
+        const int64_t start = ggml_time_us();
+        try {
+            auto job = std::make_unique<server_doc_cache_job>();
+            job->path = path;
+            job->settings = doc_cache_settings_hash();
+            job->packed = slot.prompt.tokens.serialize();
+            const size_t n_target = llama_state_seq_get_size_ext(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+            const size_t n_draft = ctx_dft ? llama_state_seq_get_size_ext(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) : 0;
+            common_speculative_get_state(spec.get(), slot.id, job->spec);
+            // DenseX: checked accumulation includes the capture reservation, checkpoints and metadata slack.
+            uint64_t bytes = 1024 * 1024;
+            auto add = [&](uint64_t n) {
+                if (n > server_doc_cache_writer::budget - bytes) {
+                    throw std::runtime_error("snapshot exceeds 3072 MiB cap");
+                }
+                bytes += n;
+            };
+            add(job->packed.capacity());
+            add(slot.prompt.tokens.size() * sizeof(llama_token));
+            add(n_target);
+            add(n_draft);
+            add(job->spec.capacity());
+            for (const auto & cur : slot.prompt.checkpoints) {
+                add(sizeof(cur) + 2 * sizeof(void *));
+                add(cur.data_tgt.size());
+                add(cur.data_dft.size());
+                add(cur.data_spec.size());
+            }
+            if (!doc_cache_writer->reserve(bytes, server_doc_cache_writer::available_memory())) {
+                SLT_INF(slot, "document cache: async skipped (busy or insufficient RAM, snapshot %.1f MiB)\n", double(bytes) / 1024 / 1024);
+                return false;
+            }
+            reserved = true;
+            job->tokens = slot.prompt.tokens.get_tokens();
+            job->checkpoints = slot.prompt.checkpoints;
+            job->target.resize(n_target);
+            if (n_target == 0 || llama_state_seq_get_data_ext(ctx_tgt, job->target.data(), n_target, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) != n_target) {
+                throw std::runtime_error("incomplete target snapshot");
+            }
+            if (ctx_dft) {
+                job->draft.resize(n_draft);
+                if (llama_state_seq_get_data_ext(ctx_dft, job->draft.data(), n_draft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) != n_draft) {
+                    throw std::runtime_error("incomplete draft snapshot");
+                }
+            }
+            doc_cache_writer->submit(std::move(job));
+            SLT_INF(slot, "document cache: async captured '%s' (%.1f MiB reserved, %.0f ms), queued\n", path.c_str(),
+                    double(bytes) / 1024 / 1024, (ggml_time_us() - start) / 1000.0);
+            return true;
+        } catch (const std::exception & err) {
+            if (reserved) {
+                doc_cache_writer->cancel_reservation();
+            }
+            SLT_WRN(slot, "document cache: async skipped: %s\n", err.what());
+            return false;
+        }
+    }
+
     // Store the state the slot holds right now. Called once the prompt has been evaluated, before sampling starts.
     bool doc_cache_save(server_slot & slot) {
         if (doc_cache_path.empty() || slot.doc_cache_loaded) {
@@ -2969,6 +3063,10 @@ private:
         if (std::filesystem::exists(std::filesystem::u8path(path), ec)) {
             SLT_TRC(slot, "document cache: %s already cached\n", key.c_str());
             return false;
+        }
+
+        if (doc_cache_writer) {
+            return doc_cache_capture(slot, path);
         }
 
         const int64_t t_start = ggml_time_us();
@@ -3048,25 +3146,50 @@ private:
         const int64_t t_start = ggml_time_us();
         slot.prompt_clear();
 
-        size_t n_packed = 0;
-        size_t nread = llama_state_seq_load_file(ctx_tgt, path.c_str(), slot.id, nullptr, 0, &n_packed);
-        if (nread == 0) {
-            SLT_WRN(slot, "document cache: '%s' does not fit into the context\n", key.c_str());
-            slot.prompt_clear();
-            return false;
-        }
-
         llama_tokens packed;
-        packed.resize(std::max<size_t>(1, n_packed));
-        nread = llama_state_seq_load_file(ctx_tgt, path.c_str(), slot.id, packed.data(), packed.size(), &n_packed);
+        size_t nread = 0;
+        uint32_t magic = 0;
+        std::ifstream header(std::filesystem::u8path(path), std::ios::binary);
+        header.read(reinterpret_cast<char *>(&magic), sizeof(magic));
+        const bool detached = magic == server_doc_cache_writer::magic;
+        if (detached) {
+            // DenseX: RAM state blobs have their own layout; never pass them to the legacy file loader.
+            try {
+                std::vector<uint8_t> target;
+                nread = server_doc_cache_writer::read_target(path, packed, target);
+                if (nread && llama_state_seq_set_data_ext(ctx_tgt, target.data(), target.size(), slot.id,
+                        LLAMA_STATE_SEQ_FLAGS_NONE) != target.size()) {
+                    nread = 0;
+                }
+            } catch (const std::exception & err) {
+                SLT_WRN(slot, "document cache: cannot stage detached state: %s\n", err.what());
+                nread = 0;
+            }
+        } else {
+            size_t n_packed = 0;
+            nread = llama_state_seq_load_file(ctx_tgt, path.c_str(), slot.id, nullptr, 0, &n_packed);
+            if (nread != 0) {
+                packed.resize(std::max<size_t>(1, n_packed));
+                nread = llama_state_seq_load_file(ctx_tgt, path.c_str(), slot.id, packed.data(), packed.size(), &n_packed);
+                packed.resize(n_packed);
+            }
+        }
         if (nread == 0) {
             SLT_WRN(slot, "document cache: cannot read '%s'\n", key.c_str());
             slot.prompt_clear();
             return false;
         }
-        packed.resize(n_packed);
-
-        server_tokens restored = server_tokens::deserialize(packed, mctx != nullptr);
+        server_tokens restored;
+        try {
+            restored = server_tokens::deserialize(packed, mctx != nullptr);
+        } catch (const std::exception & err) {
+            if (!detached) {
+                throw;
+            }
+            SLT_WRN(slot, "document cache: invalid detached tokens: %s\n", err.what());
+            slot.prompt_clear();
+            return false;
+        }
         if (restored.size() != expect.size() ||
                 !std::equal(expect.begin(), expect.end(), restored.get_tokens().begin()) ||
                 !restored.validate(ctx_tgt)) {
@@ -3076,8 +3199,25 @@ private:
         }
 
         slot.prompt.tokens = std::move(restored);
-        const size_t n_ckpt = load_slot_checkpoints(path, nread, slot);
-        const size_t n_dft  = load_slot_draft(path, nread + n_ckpt, slot);
+        size_t n_ckpt = 0;
+        size_t n_dft = 0;
+        try {
+            n_ckpt = load_slot_checkpoints(path, nread, slot);
+            n_dft = load_slot_draft(path, nread + n_ckpt, slot, detached);
+        } catch (const std::exception & err) {
+            if (!detached) {
+                throw;
+            }
+            SLT_WRN(slot, "document cache: cannot restore detached appendices: %s\n", err.what());
+            slot.prompt_clear();
+            return false;
+        }
+
+        if (detached && (n_ckpt == 0 || n_dft == 0)) {
+            SLT_WRN(slot, "document cache: incomplete detached appendix in '%s'\n", key.c_str());
+            slot.prompt_clear();
+            return false;
+        }
 
         slot.doc_cache_loaded = true;
 
@@ -3221,7 +3361,7 @@ private:
 
     // returns the number of bytes consumed, 0 if there is no usable draft state
     // the draft starts empty unless the file holds a draft state that fits the draft context
-    size_t load_slot_draft(const std::string & filepath, size_t offset, server_slot & slot) const {
+    size_t load_slot_draft(const std::string & filepath, size_t offset, server_slot & slot, bool require_complete = false) const {
         if (slot.mtp_kv_window) {
             // Older slot files may have draft KV without a speculative-state trailer.
             common_speculative_set_state(spec.get(), slot.id, {});
@@ -3256,7 +3396,7 @@ private:
                     llama_memory_seq_rm(llama_get_memory(ctx_dft), slot.id, -1, -1);
                 }
                 SLT_WRN(slot, "draft state in '%s' does not match the draft context - dropped\n", filepath.c_str());
-                return n_read;
+                return require_complete ? 0 : n_read;
             }
         }
         if (!data_spec.empty()) {
@@ -3714,6 +3854,7 @@ private:
 #endif
 
     void update_slots() {
+        doc_cache_publish();
 #ifdef DEBUG_TIMINGS
         static int64_t t_prev = 0;
         int64_t t_start = ggml_time_us();

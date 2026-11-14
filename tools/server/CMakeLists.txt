@@ -17,6 +17,8 @@ add_library(${TARGET} STATIC
     server-decision.h
     server-context.cpp
     server-context.h
+    server-doc-cache.cpp
+    server-doc-cache.h
     server-request-log.h
     server-hardware.cpp
     server-hardware.h

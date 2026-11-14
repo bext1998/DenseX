@@ -710,6 +710,7 @@ struct common_params {
     std::string densex_doc_cache_path;
     int32_t     densex_doc_cache_max_mib  = 16384; // evict the oldest files above this size
     int32_t     densex_doc_cache_min_tokens = 1024; // do not bother with short prompts (the RAM cache covers them)
+    bool        densex_doc_cache_async = false; // DenseX: detached post-prefill snapshot and bounded background writer
 
     float slot_prompt_similarity = 0.1f;
 

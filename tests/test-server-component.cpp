@@ -2,8 +2,12 @@
 
 #include "../tools/server/server-common.h"
 #include "../tools/server/server-decision.h"
+#include "../tools/server/server-doc-cache.h"
 
 #include <cstdlib>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <regex>
 #include <string>
 #include <thread>
@@ -354,7 +358,8 @@ static void test_server_pipe(testing & t) {
         server_pipe<int> p;
         std::thread producer([&]() {
             for (int i = 0; i < n; i++) {
-                p.write(int(i));
+                int value = i;
+                p.write(std::move(value)); // DenseX: explicit xvalue for MSVC's rvalue-reference binding.
             }
             p.close_write();
         });
@@ -435,6 +440,106 @@ static void test_decision_escape(testing & t) {
     });
 }
 
+// DenseX: real detached I/O, bounded admission, publication and failure without a model/GPU.
+static void test_doc_cache_async(testing & t) {
+    namespace fs = std::filesystem;
+    const char * base = std::getenv("DENSEX_DOCCACHE_TEST_DIR");
+    const auto dir = (base ? fs::u8path(base) : fs::temp_directory_path()) /
+        ("densex-doc-cache-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::create_directories(dir);
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool ready = false;
+    server_doc_cache_writer writer([&] {
+        std::lock_guard<std::mutex> lock(mutex);
+        ready = true;
+        cv.notify_one();
+    });
+    auto wait = [&] {
+        std::unique_lock<std::mutex> lock(mutex);
+        t.assert_true("writer completed", cv.wait_for(lock, std::chrono::seconds(10), [&] { return ready; }));
+        ready = false;
+        return writer.take_result();
+    };
+    t.assert_true("over budget rejected", !writer.reserve(writer.budget + 1, UINT64_MAX));
+    t.assert_true("headroom rejected", !writer.reserve(100, writer.headroom + 99));
+    t.assert_true("reserve", writer.reserve(100, UINT64_MAX));
+    t.assert_true("capture counts as busy", !writer.reserve(1, UINT64_MAX));
+    writer.cancel_reservation();
+    t.assert_true("failed capture releases capacity", writer.reserve(100, UINT64_MAX));
+    auto job = std::make_unique<server_doc_cache_job>();
+    job->path = (dir / "valid.bin").u8string();
+    const auto path = job->path;
+    job->settings = 123;
+    job->packed.resize(2 * sizeof(llama_token), 0);
+    job->tokens = {10, 20};
+    job->target = {1, 2, 3};
+    common_prompt_checkpoint ckpt;
+    ckpt.n_tokens = 2;
+    ckpt.pos_min = 0;
+    ckpt.pos_max = 1;
+    ckpt.data_tgt = {4, 5};
+    job->checkpoints.push_back(ckpt);
+    job->draft = {6, 7};
+    job->spec = {8};
+    writer.submit(std::move(job));
+    auto done = wait();
+    t.assert_true("write succeeded", done && done->error.empty());
+    t.assert_true("not visible before publication", !fs::exists(fs::u8path(path)));
+    size_t sidecars = 0;
+    for (const auto & entry : fs::directory_iterator(dir)) {
+        sidecars += entry.path().extension() == ".tok";
+    }
+    t.assert_equal("no prefix candidate before publication", size_t(0), sidecars);
+    t.assert_true("publish", done && writer.publish(*done));
+    t.assert_true("sidecar published", fs::exists(fs::u8path(path + ".tok")));
+    llama_tokens packed;
+    std::vector<uint8_t> target;
+    t.assert_true("versioned format accepted", writer.read_target(path, packed, target) != 0);
+    t.assert_true("target bytes detached", target == std::vector<uint8_t>({1, 2, 3}));
+    t.assert_equal("packed count", size_t(2), packed.size());
+    const auto corrupt = dir / "truncated.bin";
+    std::ifstream src(fs::u8path(path), std::ios::binary);
+    std::ofstream dst(corrupt, std::ios::binary);
+    char header[20];
+    src.read(header, sizeof(header));
+    dst.write(header, sizeof(header));
+    dst.close();
+    t.assert_equal("truncated container is a miss", size_t(0), writer.read_target(corrupt.u8string(), packed, target));
+    const auto forged = dir / "oversized-length.bin";
+    std::ofstream bad(forged, std::ios::binary);
+    const uint32_t prefix[] = {writer.magic, writer.version};
+    const uint64_t lengths[] = {0, UINT64_MAX};
+    bad.write(reinterpret_cast<const char *>(prefix), sizeof(prefix));
+    bad.write(reinterpret_cast<const char *>(lengths), sizeof(lengths));
+    bad.close();
+    t.assert_equal("corrupt length rejected before allocation", size_t(0), writer.read_target(forged.u8string(), packed, target));
+    t.assert_true("never overwrite existing entry", !writer.publish(*done));
+    t.assert_true("capacity after completion", writer.reserve(100, UINT64_MAX));
+    auto failed = std::make_unique<server_doc_cache_job>();
+    failed->path = (dir / "missing-directory" / "failed.bin").u8string();
+    const auto failed_path = failed->path;
+    writer.submit(std::move(failed));
+    auto failure = wait();
+    t.assert_true("I/O failure reported", failure && !failure->error.empty());
+    t.assert_true("I/O failure cannot publish", failure && !writer.publish(*failure));
+    t.assert_true("no half file", !fs::exists(fs::u8path(failed_path)));
+    t.assert_true("failure releases capacity", writer.reserve(1, UINT64_MAX));
+    writer.cancel_reservation();
+    writer.shutdown();
+    t.assert_true("shutdown rejects capture", !writer.reserve(1, UINT64_MAX));
+    server_doc_cache_writer drain([] {});
+    t.assert_true("reserve before drain", drain.reserve(100, UINT64_MAX));
+    auto last = std::make_unique<server_doc_cache_job>();
+    last->path = (dir / "drained.bin").u8string();
+    last->target = {9};
+    drain.submit(std::move(last));
+    drain.shutdown();
+    auto drained = drain.take_result();
+    t.assert_true("shutdown drains queued work", drained && drained->error.empty());
+    t.assert_true("drained work can publish", drained && drain.publish(*drained));
+}
+
 int main(int argc, char ** argv) {
     testing t;
 
@@ -454,6 +559,7 @@ int main(int argc, char ** argv) {
     t.test("lora_helpers",  test_lora_helpers);
     t.test("server_pipe",   test_server_pipe);
     t.test("decision_escape", test_decision_escape);
+    t.test("doc_cache_async", test_doc_cache_async);
 
     return t.summary();
 }

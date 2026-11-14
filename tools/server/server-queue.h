@@ -3,6 +3,7 @@
 #include "server-task.h"
 
 #include <condition_variable>
+#include <atomic>
 #include <deque>
 #include <exception>
 #include <mutex>
@@ -29,6 +30,7 @@ private:
 
     std::mutex mutex_tasks;
     std::condition_variable condition_tasks;
+    std::atomic<bool> update_requested{false}; // DenseX: detached I/O completion, no task/slot access
 
     // used by yield_to_queue, all fields are guarded by mutex_tasks
     struct worker_t {
@@ -76,6 +78,12 @@ public:
 
     // end the start_loop routine
     void terminate();
+
+    // DenseX: safe even while the sleeping callback holds mutex_tasks and drains I/O.
+    void request_update() {
+        update_requested.store(true);
+        condition_tasks.notify_one();
+    }
 
     /**
      * Main loop consists of these steps:

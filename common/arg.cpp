@@ -3602,6 +3602,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DENSEX_DOC_CACHE"));
     add_opt(common_arg(
+        {"--densex-doc-cache-async"},
+        "DenseX: experimental background document-cache writer (default: off); one snapshot, 3072 MiB cap,\n"
+        "requires 2048 MiB free RAM headroom; busy/oversized captures are skipped, not saved synchronously",
+        [](common_params & params) {
+            params.densex_doc_cache_async = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DENSEX_DOC_CACHE_ASYNC"));
+    add_opt(common_arg(
         {"--densex-doc-cache-max-mib"}, "N",
         string_format("DenseX: size limit of the document KV cache in MiB, oldest files are evicted first (default: %d)", params.densex_doc_cache_max_mib),
         [](common_params & params, int value) {
