@@ -3168,11 +3168,14 @@ private:
         } else {
             size_t n_packed = 0;
             nread = llama_state_seq_load_file(ctx_tgt, path.c_str(), slot.id, nullptr, 0, &n_packed);
-            if (nread != 0) {
-                packed.resize(std::max<size_t>(1, n_packed));
-                nread = llama_state_seq_load_file(ctx_tgt, path.c_str(), slot.id, packed.data(), packed.size(), &n_packed);
-                packed.resize(n_packed);
+            if (nread == 0) {
+                SLT_WRN(slot, "document cache: '%s' does not fit into the context\n", key.c_str());
+                slot.prompt_clear();
+                return false;
             }
+            packed.resize(std::max<size_t>(1, n_packed));
+            nread = llama_state_seq_load_file(ctx_tgt, path.c_str(), slot.id, packed.data(), packed.size(), &n_packed);
+            packed.resize(n_packed);
         }
         if (nread == 0) {
             SLT_WRN(slot, "document cache: cannot read '%s'\n", key.c_str());
