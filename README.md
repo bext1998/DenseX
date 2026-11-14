@@ -5,7 +5,7 @@
   </picture>
 </h1>
 
-State of the art for dense model inference at home.
+**Next-Gen Dense Model Inference Engine at Home.**
 
 DenseX is an experimental inference engine for running large **dense** models on low-VRAM consumer GPUs at long context. Its primary model scope is the full Qwen 3.8 27B **GSQ-RCO** range, including ISTA-DASLab's original tiers and GSQ-RCO variants such as Swift 1.5. **Unsloth Dynamic v3.1**, across its full tier range, is the second series added in [#24](https://github.com/bext1998/DenseX/issues/24).
 
