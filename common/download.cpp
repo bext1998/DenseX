@@ -605,12 +605,6 @@ static hf_cache::hf_file find_best_mtp(const hf_cache::hf_files & files,
     return find_best_sibling(files, model, "mtp-", tag);
 }
 
-static hf_cache::hf_file find_best_eagle3(const hf_cache::hf_files & files,
-                                          const std::string        & model,
-                                          const std::string        & tag = "") {
-    return find_best_sibling(files, model, "eagle3-", tag);
-}
-
 static hf_cache::hf_file find_best_dflash(const hf_cache::hf_files & files,
                                           const std::string        & model,
                                           const std::string        & tag = "") {
@@ -731,7 +725,7 @@ common_download_hf_plan common_download_get_hf_plan(const common_params_model & 
     } else {
         primary = find_best_model(all, tag);
         // a requested sidecar can resolve on its own, without a full model of the same tag
-        if (primary.path.empty() && !opts.download_mtp && !opts.download_dflash && !opts.download_eagle3 && !opts.download_dspark) {
+        if (primary.path.empty() && !opts.download_mtp && !opts.download_dflash && !opts.download_dspark) {
             LOG_ERR("%s: no GGUF files found in repository %s\n", __func__, repo.c_str());
             list_available_gguf_files(all);
             return plan;
@@ -752,15 +746,12 @@ common_download_hf_plan common_download_get_hf_plan(const common_params_model & 
     if (opts.download_dflash) {
         plan.dflash = find_best_dflash(all, primary.path, tag);
     }
-    if (opts.download_eagle3) {
-        plan.eagle3 = find_best_eagle3(all, primary.path, tag);
-    }
     if (opts.download_dspark) {
         plan.dspark = find_best_dspark(all, primary.path, tag);
     }
 
     if (primary.path.empty() &&
-        plan.mtp.local_path.empty() && plan.dflash.local_path.empty() && plan.eagle3.local_path.empty() && plan.dspark.local_path.empty()) {
+        plan.mtp.local_path.empty() && plan.dflash.local_path.empty() && plan.dspark.local_path.empty()) {
         LOG_ERR("%s: no GGUF files found in repository %s\n", __func__, repo.c_str());
         list_available_gguf_files(all);
     }
