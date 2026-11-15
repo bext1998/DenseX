@@ -215,12 +215,23 @@ uses a 16384-token context and keeps all transformer layers on the GPU. It is
 based on the measured short-context configuration; see [USAGE](USAGE.md#short-context).
 It avoids allocating a 128K context just for a short prompt.
 
+Since 2026-11-16 the preset drafts with a separate **DFlash2** model, so download
+`z-lab/Qwen3.8-27B-DFlash2-GGUF`, file `Qwen3.8-27B-DFlash2-Q4_K_M.gguf`
+(1,143,006,816 bytes; SHA256
+`1a25c56858e1ebe93f2718ac1d49d1151f9323325c1bbfd6209370f4db131ebd`), verify the
+hash, and unpack it beside the main model. The short-context placement of the
+DFlash2 draft file is **not yet measured**; if the server reports shared GPU
+memory use or a slow prompt evaluation, apply the 22-layer `-ot` override from
+the [128K preset](USAGE.md#128k-context) instead of removing the draft model.
+
 ```powershell
 $server = '.\build\sm86\bin\llama-server.exe'
 # For a named/workspace build, set $server to the executable printed above.
 $model = '.\models\Swift-1.5-Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf'
+$draft = '.\models\DFlash2-Qwen3.8-27B\Qwen3.8-27B-DFlash2-Q4_K_M.gguf'
 if (!(Test-Path -LiteralPath $server)) { throw 'Server executable missing' }
 if (!(Test-Path -LiteralPath $model)) { throw 'Model file missing' }
+if (!(Test-Path -LiteralPath $draft)) { throw 'DFlash2 draft model missing - download Qwen3.8-27B-DFlash2-Q4_K_M.gguf (see above)' }
 
 $env:GGML_SCHED_PREFETCH = '0'
 $env:GGML_OP_OFFLOAD_MIN_BATCH = '1'
@@ -229,16 +240,16 @@ $env:DENSEX_GDN_DEFERRED = '1'
 $env:DENSEX_FA_DECODE_MMA = '1'
 $env:DENSEX_MMQ_SLOTS = '1'
 $env:DENSEX_MMVQ_MAX = '-1'
-$env:DENSEX_DRAFT_VOCAB_ORDER = 'models/densex/qwen38-draft-vocab-freq.tsv'
-$env:DENSEX_DRAFT_VOCAB = '49152'
 $env:DENSEX_KV_VMM = '0'
+# No DENSEX_DRAFT_VOCAB*: the reduced draft vocabulary belongs to the embedded MTP head and is refused at load
+# together with a separate draft model (as is --spec-draft-kv-window).
 $serverArgs = @(
     '-m', $model, '--alias', 'densex-local', '--host', '127.0.0.1', '--port', '8080',
     '-c', '16384', '-np', '1', '-ngl', '99', '-t', '6', '-tb', '6',
     '-b', '512', '-ub', '128', '-fa', 'on', '-ctk', 'q4_0', '-ctv', 'q4_0',
-    '--spec-type', 'draft-mtp', '--spec-draft-n-max', '12',
+    '--spec-type', 'draft-dflash', '--spec-draft-n-max', '7', '-md', $draft,
     '--spec-draft-type-k', 'q8_0', '--spec-draft-type-v', 'q8_0',
-    '--spec-draft-kv-window', '0', '--temp', '0', '--jinja', '--fit', 'off',
+    '--temp', '0', '--jinja', '--fit', 'off',
     '--chat-template-kwargs', '{"enable_thinking":false}', '--load-mode', 'none'
 )
 & $server @serverArgs
@@ -248,6 +259,13 @@ if ($LASTEXITCODE -ne 0) { throw 'Server exited with an error; inspect its log' 
 Keep that terminal running. If startup fails, preserve the log and check
 [memory and speed troubleshooting](USAGE.md#troubleshooting). Do not start a
 second server on another port to work around insufficient memory.
+
+Prefer the embedded MTP head instead of a second file? Replace
+`--spec-type draft-dflash --spec-draft-n-max 7 -md $draft` with
+`--spec-type draft-mtp --spec-draft-n-max 12 --spec-draft-kv-window 0`, delete
+the `$draft` check and line, and set `DENSEX_DRAFT_VOCAB_ORDER` /
+`DENSEX_DRAFT_VOCAB=49152` as before. That is the previous preset and the one
+behind the published speed results; both routes are supported.
 
 ## 4. Verify from a second PowerShell terminal
 

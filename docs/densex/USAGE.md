@@ -8,8 +8,9 @@ variables are read once and cached.
 ## Short context
 
 For short requests on the measured RTX 3060 12 GB / 32 GB RAM machine, start with
-`-c 16384`, all layers on GPU (`-ngl 99`, no `-ot` CPU override), and
-`--spec-draft-kv-window 0`. The complete command is in
+`-c 16384`, all layers on GPU (`-ngl 99`, no `-ot` CPU override), and the DFlash2
+draft model (`--spec-type draft-dflash --spec-draft-n-max 7 -md <file>`). The
+complete command, including the draft-model download, is in
 [INSTALL](INSTALL.md#3-first-launch-short-context).
 
 Historical L1 measurements used a 4000-token prompt, context 16384, IQ3_XXS-mtp,
@@ -37,6 +38,9 @@ an explicit executable path, local address, and model alias:
 ```powershell
 $server = '.\build\sm86\bin\llama-server.exe'
 $model = '.\models\Swift-1.5-Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf'
+# DFlash2 draft model: download z-lab/Qwen3.8-27B-DFlash2-GGUF, file Qwen3.8-27B-DFlash2-Q4_K_M.gguf
+# (1,143,006,816 bytes, SHA256 1a25c568...db131ebd) and unpack it next to the main model - see INSTALL
+$draft = '.\models\DFlash2-Qwen3.8-27B\Qwen3.8-27B-DFlash2-Q4_K_M.gguf'
 $env:GGML_SCHED_PREFETCH = '4'
 $env:GGML_OP_OFFLOAD_MIN_BATCH = '1'
 $env:GGML_CUDA_FA_NATIVE_KV = '1'
@@ -44,18 +48,18 @@ $env:DENSEX_GDN_DEFERRED = '1'
 $env:DENSEX_FA_DECODE_MMA = '1'
 $env:DENSEX_MMQ_SLOTS = '1'
 $env:DENSEX_MMVQ_MAX = '-1'
-$env:DENSEX_DRAFT_VOCAB_ORDER = 'models/densex/qwen38-draft-vocab-freq.tsv'
-$env:DENSEX_DRAFT_VOCAB = '49152'
+# No DENSEX_DRAFT_VOCAB* here: the reduced draft vocabulary applies to the embedded MTP head only and is
+# refused at load together with a separate draft model. Same for --spec-draft-kv-window.
 $env:DENSEX_KV_VMM = '0'
 $serverArgs = @(
     '-m', $model, '--alias', 'densex-local', '--host', '127.0.0.1', '--port', '8080',
     '-c', '131072', '-np', '1', '-ngl', '99', '-t', '6', '-tb', '6',
     '-b', '512', '-ub', '128', '-fa', 'on', '-ctk', 'q4_0', '-ctv', 'q4_0',
-    '--spec-type', 'draft-mtp', '--spec-draft-n-max', '12',
+    '--spec-type', 'draft-dflash', '--spec-draft-n-max', '7', '-md', $draft,
     '--spec-draft-type-k', 'q8_0', '--spec-draft-type-v', 'q8_0',
-    '--spec-draft-kv-window', '32768', '--temp', '0', '--jinja', '--fit', 'off',
+    '--temp', '0', '--jinja', '--fit', 'off',
     '--chat-template-kwargs', '{"enable_thinking":false}',
-    '-ot', 'blk\.(3|7|11|15|19|23|27|31|35|39|43|47|51|55|59|63)\.ffn_(gate|up|down)\.weight=CPU',
+    '-ot', 'blk\.(1|4|7|10|13|16|19|22|25|28|31|33|36|39|42|45|48|51|54|57|60|63)\.ffn_(gate|up|down)\.weight=CPU',
     '--load-mode', 'none'
 )
 & $server @serverArgs
@@ -64,6 +68,28 @@ if ($LASTEXITCODE -ne 0) { throw 'Server exited with an error' }
 
 Set `$server` to your named-build output if needed. Send the smoke request in
 INSTALL to confirm startup; a short request alone does not validate 128K quality.
+
+Why this preset differs from the earlier MTP one:
+
+- **DFlash2, draft length 7.** A separate draft model, so `-md` points at the
+  1.14 GB DFlash2 Q4_K_M file (download it first; steps in
+  [INSTALL](INSTALL.md#2-obtain-the-model)). Measured with the ISTA GSQ-RCO
+  IQ3_XXS-mtp main file at 4K / 120K: 32.8 / 27.7 tok/s, +22% / +17% over the
+  MTP-12 preset, prompt processing and time to first token unchanged.
+- **22 FFN layers on the host, not 16.** The draft file needs about 1.14 GB of
+  extra VRAM; with 16 layers the run spilled into shared GPU memory and prompt
+  processing fell to about 38 tok/s, at both 4K and 120K depth. 22 layers fit
+  and are still faster overall. Measured DFlash2 speed at other layer counts is
+  **not yet available**.
+- **No draft vocabulary, no draft window.** Both switches target the embedded
+  MTP head and the engine refuses `DENSEX_DRAFT_VOCAB_ORDER` when a separate
+  draft model is loaded; the target still verifies against the full vocabulary.
+- **MTP variant** for main files that carry an embedded MTP head (or when no
+  second file is wanted): `--spec-type draft-mtp --spec-draft-n-max 12`,
+  `--spec-draft-kv-window 32768`, the 16-layer
+  `-ot "blk\.(3|7|11|15|19|23|27|31|35|39|43|47|51|55|59|63)\...."` override, and
+  `DENSEX_DRAFT_VOCAB_ORDER` + `DENSEX_DRAFT_VOCAB=49152`. That was the
+  preset behind the published speed results.
 This exact API smoke sequence is **untested** in build-only checks. Historical
 speed and quality results are listed separately below.
 
@@ -72,8 +98,8 @@ speed and quality results are listed separately below.
 the GPU for computation. This is not the slower path that computes the moved
 FFN weights on the CPU. Keep all three settings together.
 
-The draft window limits only MTP's guesses; the target still uses full attention.
-Do not truncate the user's document to imitate that setting.
+The draft window (MTP variant only) limits only MTP's guesses; the target still
+uses full attention. Do not truncate the user's document to imitate that setting.
 
 The [README results](../../README.md#results-rtx-3060-12-gb-measured) are C34:
 120K generation 28.1 / 27.9 tok/s, prompt processing 253 tok/s, TTFT 474 s,
@@ -112,6 +138,18 @@ These estimates assumed main K4V4, one sequence, MTP-8, and roughly 300 MiB
 VRAM headroom. They do not transfer unchanged to the MTP-12 examples or a busy
 desktop. The survey's 12 GB placement counts predate C34; do not replace C34's
 16-layer override with an older estimate. Model-file size is not runtime VRAM.
+
+### DFlash2 is the formal preset; MTP remains the alternative
+
+Since 2026-11-16 the recommended preset drafts with a **separate DFlash2
+model** (`--spec-type draft-dflash --spec-draft-n-max 7 -md <file>`, 22 FFN
+layers on the host, no draft-vocabulary environment) - see the 128K block
+above for the full command and the download. The embedded-MTP route below is
+still supported and is the right choice when the main file already carries an
+MTP head, or when a second model file is not wanted; its settings are
+unchanged. Draft-vocabulary and draft-window switches are MTP-only: the engine
+refuses `DENSEX_DRAFT_VOCAB_ORDER` (and `--spec-draft-kv-window`) together with
+a separate draft model.
 
 ### MTP for other model files
 
@@ -152,9 +190,9 @@ values can override them.
 | `GGML_CUDA_FA_NATIVE_KV` | Off | `1` reads quantized K/V directly in the supported CUDA FlashAttention path, avoiding the full F16 staging copy. README reports about 500 MiB saved at 128K. |
 | `DENSEX_FA_DECODE_MMA` | On when native K/V is enabled and the path is eligible | `0` restores the single-token vector attention path. README reports +8% at 120K for the MMA path. |
 | `DENSEX_GDN_DEFERRED` | Automatic: on for dense `qwen35`, single sequence | Deferred commit of recurrent state during speculative verification; `0` restores snapshot rollback. Presets use `-np 1`. |
-| `--spec-draft-kv-window` | `0` (full draft context) | Limit MTP attention to the last N tokens with absolute positions; long preset uses `32768`. Does not restrict target attention. |
-| `DENSEX_DRAFT_VOCAB_ORDER` | Unset | TSV order for the shared output head; use the bundled Qwen frequency ranking. Reordering is in memory, not a model-file edit. |
-| `DENSEX_DRAFT_VOCAB` | `0` (off) | Draft over the first K head rows; use `49152` with the ranking. Without an order file, these are the first original token IDs, not the K most frequent tokens. Target logits retain the full vocabulary. |
+| `--spec-draft-kv-window` | `0` (full draft context) | Limit MTP attention to the last N tokens with absolute positions; the MTP variant uses `32768`. Does not restrict target attention. MTP only: rejected together with a separate draft model. |
+| `DENSEX_DRAFT_VOCAB_ORDER` | Unset | TSV order for the shared output head; use the bundled Qwen frequency ranking. Reordering is in memory, not a model-file edit. MTP only: the engine refuses it when a separate draft model is loaded (the formal DFlash2 preset therefore sets neither variable). |
+| `DENSEX_DRAFT_VOCAB` | `0` (off) | Draft over the first K head rows; use `49152` with the ranking (MTP variant). Without an order file, these are the first original token IDs, not the K most frequent tokens. Target logits retain the full vocabulary. MTP only, as above. |
 | `DENSEX_MMQ_SLOTS` | On | MMQ stream-k scheduling over SM/resident-block slots; `0` restores the previous scheduling. |
 | `DENSEX_MMVQ_MAX` | Unset / `-1` uses the built-in type/GPU table | A nonnegative N forces MMVQ through batch N. Leave at its default for the measured presets; `8` is not the tuned default. |
 | `DENSEX_KV_VMM` | `0` (off) | Experimental CUDA virtual-memory KV allocation. Not part of these measured presets; leave off. Runtime use with these guides is **untested**. |
@@ -187,8 +225,9 @@ Source definitions:
 | `-b 512`, `-ub 128` | Logical and physical prompt batch sizes |
 | `-fa on` | Enable FlashAttention |
 | `-ctk q4_0`, `-ctv q4_0` | Main attention K/V quantization (K4V4) |
-| `--spec-type draft-mtp`, `--spec-draft-n-max 12` | Built-in MTP drafting, at most 12 draft tokens |
-| `--model-draft` | Optional separate draft model path; unused by the measured Swift sample |
+| `--spec-type draft-dflash`, `--spec-draft-n-max 7`, `-md` | Formal preset: separate DFlash2 draft model, at most 7 draft tokens per step |
+| `--spec-type draft-mtp`, `--spec-draft-n-max 12` | MTP variant: built-in head drafting, at most 12 draft tokens (used by the published speed results) |
+| `--model-draft` (`-md`, `--spec-draft-model`) | Path of the separate draft model; the formal preset points it at the DFlash2 Q4_K_M file |
 | `--spec-draft-type-k q8_0`, `--spec-draft-type-v q8_0` | Draft cache types, separate from main K/V |
 | `--temp 0` | Temperature-zero generation |
 | `--jinja`, `--chat-template-kwargs` | Model chat template; examples set `enable_thinking:false` |

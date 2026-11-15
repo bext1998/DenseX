@@ -44,8 +44,9 @@ Peak VRAM 11857 MiB. At 120K, generation is 13% slower than at 4K.
 | FlashAttention reads quantized K/V in place | `GGML_CUDA_FA_NATIVE_KV=1` (off) | No F16 copy of the KV cache in the compute buffer (about 500 MiB saved per context at 128K) |
 | Single-token decode attention on the MMA kernel | `DENSEX_FA_DECODE_MMA=0` disables (on when native K/V is on) | +8% decode at 120K, same output |
 | Gated DeltaNet deferred commit | `DENSEX_GDN_DEFERRED` (on for dense Qwen35) | Cheap rollback of rejected MTP draft tokens |
-| Bounded KV window for MTP drafting | `--spec-draft-kv-window N` (off) | The draft head attends to the last N tokens only |
-| Draft over a reduced vocabulary | `DENSEX_DRAFT_VOCAB_ORDER=<tsv>`, `DENSEX_DRAFT_VOCAB=<K>` (off) | Draft logits over the K most frequent tokens, scattered back to original ids. Ranking for Qwen 3.8: [models/densex/qwen38-draft-vocab-freq.tsv](models/densex/qwen38-draft-vocab-freq.tsv) (token id, source: special / generated / corpus, count) |
+| Bounded KV window for MTP drafting | `--spec-draft-kv-window N` (off) | The draft head attends to the last N tokens only. MTP only: the engine rejects it together with a separate draft model |
+| Draft over a reduced vocabulary | `DENSEX_DRAFT_VOCAB_ORDER=<tsv>`, `DENSEX_DRAFT_VOCAB=<K>` (off) | Draft logits over the K most frequent tokens, scattered back to original ids. Ranking for Qwen 3.8: [models/densex/qwen38-draft-vocab-freq.tsv](models/densex/qwen38-draft-vocab-freq.tsv) (token id, source: special / generated / corpus, count). MTP only - incompatible with a separate draft model, which refuses `DENSEX_DRAFT_VOCAB_ORDER` at load |
+| Separate DFlash2 draft model (formal preset since 2026-11-16) | `--spec-type draft-dflash --spec-draft-n-max 7 -md <draft.gguf>` | External drafter (z-lab DFlash2, Qwen 3.8 27B). Measured +22% at 4K and +17% at 120K versus the MTP-12 preset on the IQ3_XXS-mtp main file; needs the 22-layer `-ot` override below to fit |
 | MMQ stream-k over SM x resident-block slots | `DENSEX_MMQ_SLOTS=0` disables (on) | |
 | MMVQ / MMQ switch point per type for small verify batches | `DENSEX_MMVQ_MAX=<n>` overrides (built-in table) | Thresholds measured on sm86 |
 
@@ -64,16 +65,42 @@ pwsh -File scripts/densex/build.ps1 -Target test-backend-ops -Tests
 
 ## Example: 120K on a 12 GB GPU
 
+Download the draft model first: `z-lab/Qwen3.8-27B-DFlash2-GGUF`, file
+`Qwen3.8-27B-DFlash2-Q4_K_M.gguf` (1,143,006,816 bytes; SHA256
+`1a25c56858e1ebe93f2718ac1d49d1151f9323325c1bbfd6209370f4db131ebd`) - see
+[INSTALL](docs/densex/INSTALL.md#2-obtain-the-model).
+
 ```powershell
 $env:GGML_SCHED_PREFETCH = '4'; $env:GGML_OP_OFFLOAD_MIN_BATCH = '1'; $env:GGML_CUDA_FA_NATIVE_KV = '1'
-$env:DENSEX_DRAFT_VOCAB_ORDER = 'models/densex/qwen38-draft-vocab-freq.tsv'; $env:DENSEX_DRAFT_VOCAB = '49152'
 llama-server -m Swift-1.5-Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf -c 131072 -np 1 -ngl 99 -t 6 -tb 6 -b 512 -ub 128 -fa on `
-  -ctk q4_0 -ctv q4_0 --spec-type draft-mtp --spec-draft-n-max 12 --spec-draft-type-k q8_0 --spec-draft-type-v q8_0 `
-  --spec-draft-kv-window 32768 --temp 0 --jinja --fit off --chat-template-kwargs '{"enable_thinking":false}' `
-  -ot "blk\.(3|7|11|15|19|23|27|31|35|39|43|47|51|55|59|63)\.ffn_(gate|up|down)\.weight=CPU" --load-mode none
+  -ctk q4_0 -ctv q4_0 --spec-type draft-dflash --spec-draft-n-max 7 -md <path-to>\Qwen3.8-27B-DFlash2-Q4_K_M.gguf `
+  --spec-draft-type-k q8_0 --spec-draft-type-v q8_0 --temp 0 --jinja --fit off --chat-template-kwargs '{"enable_thinking":false}' `
+  -ot "blk\.(1|4|7|10|13|16|19|22|25|28|31|33|36|39|42|45|48|51|54|57|60|63)\.ffn_(gate|up|down)\.weight=CPU" --load-mode none
 ```
 
-This is the configuration of the results table (thinking off, 512 generated tokens per request, one request per server start).
+Notes on this preset:
+
+- **22 FFN layers on the host, not 16.** The DFlash2 draft file adds about
+  1.14 GB; at 16 layers the run spilled into shared GPU memory and prompt
+  processing collapsed (about 38 tok/s), while 22 layers fit. Measured with the
+  ISTA GSQ-RCO `Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf` main file: 4K 32.8 tok/s,
+  120K 27.7 tok/s (draft length 7), +22% / +17% versus the MTP-12 preset.
+  DFlash2 with the Swift sample file above is **not yet measured**.
+- **No draft-vocabulary environment variables.** `DENSEX_DRAFT_VOCAB_ORDER`
+  and `DENSEX_DRAFT_VOCAB` apply to the embedded MTP head only and are refused
+  at load when a separate draft model is used. Same for `--spec-draft-kv-window`.
+- **MTP variant** (the configuration of the results table above, and the
+  choice when the main file already carries an MTP head and you do not want a
+  second file): replace `--spec-type draft-dflash --spec-draft-n-max 7 -md ...`
+  with `--spec-type draft-mtp --spec-draft-n-max 12 --spec-draft-kv-window 32768`,
+  use the 16-layer `-ot "blk\.(3|7|...|63)\...."` override, and set
+  `DENSEX_DRAFT_VOCAB_ORDER` / `DENSEX_DRAFT_VOCAB=49152` for the reduced
+  draft vocabulary.
+
+The results table was measured with the MTP-12 variant (thinking off, 512
+generated tokens per request, one request per server start); the DFlash2
+numbers are measured with the same main file and switches, drafter and layer
+override changed as above.
 
 ## License and credits
 
