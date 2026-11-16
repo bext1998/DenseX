@@ -5660,6 +5660,12 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                     meta->logit_bias_eog,
                     data);
 
+            // DenseX: request windows fit a slot or the explicitly configured server window.
+            if (data.contains("dry_penalty_last_n") && task.params.sampling.dry_penalty_last_n >
+                    std::max<int64_t>(meta->slot_n_ctx, params.sampling.dry_penalty_last_n)) {
+                throw std::invalid_argument("dry_penalty_last_n exceeds the server window");
+            }
+
             task.apply_chat_session(chat_session);
 
             task.id_slot = json_value(data, "id_slot", -1);

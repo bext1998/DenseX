@@ -1,8 +1,18 @@
 #include "server-schema.h"
 
 #include "json-schema-to-grammar.h"
+#include <cmath>
 
 namespace server_schema {
+
+// DenseX: validate the JSON value before narrowing to sampler parameter types.
+static double dry_request_value(const json & data, const char * key, double max, bool integer = false) {
+    const double value = data.at(key).get<double>();
+    if (!std::isfinite(value) || value < 0 || value > max || (integer && std::trunc(value) != value)) {
+        throw std::invalid_argument(std::string(key) + " is outside the supported range");
+    }
+    return value;
+}
 
 //
 // llama.cpp-specific completion schema
@@ -137,21 +147,30 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
         ->set_desc("Repeat alpha presence penalty (0 = disabled)"));
 
     add((new field_num("dry_multiplier", params.sampling.dry_multiplier))
+        ->set_handler([](field_eval_context & ctx, const json & data) {
+            ctx.params.sampling.dry_multiplier = dry_request_value(data, "dry_multiplier", std::numeric_limits<float>::max());
+        })
         ->set_desc("Set the DRY (Don't Repeat Yourself) repetition penalty multiplier (0 = disabled)"));
 
     add((new field_num("dry_base", params.sampling.dry_base))
         ->set_desc("Set the DRY repetition penalty base value (must be >= 1.0, any values < 1.0 will be replaced with the default value)")
         ->set_handler([&](field_eval_context & ctx, const json & data) {
-            float v = data.at("dry_base").get<float>();
+            float v = dry_request_value(data, "dry_base", std::numeric_limits<float>::max());
             ctx.params.sampling.dry_base = (v < 1.0f) ? params_base.sampling.dry_base : v;
         }));
 
     add((new field_num("dry_allowed_length", params.sampling.dry_allowed_length))
         ->set_hard_limits(0, INT32_MAX)
+        ->set_handler([](field_eval_context & ctx, const json & data) {
+            ctx.params.sampling.dry_allowed_length = dry_request_value(data, "dry_allowed_length", INT32_MAX, true);
+        })
         ->set_desc("Tokens that extend repetition beyond this length receive exponentially increasing penalty: multiplier * base ^ (sequence_length - allowed_length)"));
 
     add((new field_num("dry_penalty_last_n", params.sampling.dry_penalty_last_n))
         ->set_hard_limits(0, INT32_MAX)
+        ->set_handler([](field_eval_context & ctx, const json & data) {
+            ctx.params.sampling.dry_penalty_last_n = dry_request_value(data, "dry_penalty_last_n", INT32_MAX, true);
+        })
         ->set_desc("How many tokens to scan for repetitions (0 = disabled)"));
 
     add((new field_num("mirostat", params.sampling.mirostat))

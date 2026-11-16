@@ -3,6 +3,7 @@
 #include "../tools/server/server-common.h"
 #include "../tools/server/server-decision.h"
 #include "../tools/server/server-doc-cache.h"
+#include "../tools/server/server-schema.h"
 
 #include <cstdlib>
 #include <chrono>
@@ -540,6 +541,30 @@ static void test_doc_cache_async(testing & t) {
     t.assert_true("drained work can publish", drained && drain.publish(*drained));
 }
 
+static void test_dry_parameters(testing & t) {
+    common_params defaults;
+    const std::vector<llama_logit_bias> bias;
+    for (const char * key : {"dry_multiplier", "dry_base", "dry_allowed_length", "dry_penalty_last_n"}) {
+        for (double value : {-1.0, 1e100}) {
+            bool rejected = false;
+            try {
+                server_schema::eval_llama_cmpl_schema(nullptr, defaults, bias, json{{key, value}});
+            } catch (const std::invalid_argument &) {
+                rejected = true;
+            }
+            t.assert_true(key, rejected);
+        }
+    }
+    const auto valid = server_schema::eval_llama_cmpl_schema(nullptr, defaults, bias,
+        json{{"dry_multiplier", 0.8}, {"dry_base", 1.75}, {"dry_allowed_length", 2}, {"dry_penalty_last_n", 64}});
+    t.assert_equal("multiplier", 0.8f, valid.sampling.dry_multiplier);
+    t.assert_equal("base", 1.75f, valid.sampling.dry_base);
+    t.assert_equal("allowed length", 2, valid.sampling.dry_allowed_length);
+    t.assert_equal("window", 64, valid.sampling.dry_penalty_last_n);
+    const auto fallback = server_schema::eval_llama_cmpl_schema(nullptr, defaults, bias, json{{"dry_base", 0.5}});
+    t.assert_equal("base fallback preserved", defaults.sampling.dry_base, fallback.sampling.dry_base);
+}
+
 static void test_rerank_limit(testing & t) {
     const json ranks = json::array({json{{"index", 0}, {"score", 0.5}}, json{{"index", 1}, {"score", 0.8}}});
     std::vector<std::string> texts{"a", "b"};
@@ -591,6 +616,7 @@ int main(int argc, char ** argv) {
     t.test("doc_cache_async", test_doc_cache_async);
     t.test("doc_cache_names", test_doc_cache_names);
     t.test("rerank_limit", test_rerank_limit);
+    t.test("dry_parameters", test_dry_parameters);
 
     return t.summary();
 }
