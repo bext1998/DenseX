@@ -3001,7 +3001,7 @@ private:
             std::string bin = e.path().u8string();
             bin.resize(bin.size() - 4); // drop ".tok"
             // DenseX: .bin is the publication marker; orphan/early sidecars are never candidates.
-            if (fs::u8path(bin).extension() != ".bin" || !fs::is_regular_file(fs::u8path(bin), ec)) {
+            if (!server_doc_cache_is_filename(fs::u8path(bin).filename().u8string()) || !fs::is_regular_file(fs::u8path(bin), ec)) {
                 continue;
             }
 
@@ -3038,7 +3038,7 @@ private:
         std::vector<std::pair<fs::file_time_type, std::pair<uintmax_t, fs::path>>> files;
         uintmax_t total = 0;
         for (const auto & e : fs::directory_iterator(fs::u8path(doc_cache_path), ec)) {
-            if (!e.is_regular_file(ec) || e.path().extension() != ".bin") {
+            if (!e.is_regular_file(ec) || !server_doc_cache_is_filename(e.path().filename().u8string())) {
                 continue;
             }
             const uintmax_t sz = e.file_size(ec);

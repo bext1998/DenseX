@@ -540,6 +540,18 @@ static void test_doc_cache_async(testing & t) {
     t.assert_true("drained work can publish", drained && drain.publish(*drained));
 }
 
+static void test_doc_cache_names(testing & t) {
+    for (const char * name : {"0123456789abcdef-0.bin", "ffffffffffffffff-1024.bin"}) {
+        t.assert_true(name, server_doc_cache_is_filename(name));
+    }
+    for (const char * name : {"backup.bin", "0123456789abcde-1.bin", "0123456789abcdeg-1.bin",
+            "0123456789ABCDEF-1.bin", "0123456789abcdef--1.bin", "0123456789abcdef-01.bin",
+            "0123456789abcdef-.bin", "0123456789abcdef-1.bin.tok", "0123456789abcdef-1x.bin",
+            "0123456789abcdef-184467440737095516160.bin"}) {
+        t.assert_true(name, !server_doc_cache_is_filename(name));
+    }
+}
+
 int main(int argc, char ** argv) {
     testing t;
 
@@ -560,6 +572,7 @@ int main(int argc, char ** argv) {
     t.test("server_pipe",   test_server_pipe);
     t.test("decision_escape", test_decision_escape);
     t.test("doc_cache_async", test_doc_cache_async);
+    t.test("doc_cache_names", test_doc_cache_names);
 
     return t.summary();
 }

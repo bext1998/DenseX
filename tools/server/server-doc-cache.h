@@ -9,6 +9,9 @@
 #include <mutex>
 #include <thread>
 
+// DenseX: recognize only names produced by the document cache.
+bool server_doc_cache_is_filename(const std::string & name);
+
 // DenseX: only detached, owning host buffers may cross the writer boundary.
 struct server_doc_cache_job {
     std::string path;

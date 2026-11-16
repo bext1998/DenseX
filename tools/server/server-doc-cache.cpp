@@ -1,9 +1,29 @@
 #include "server-doc-cache.h"
 
 #include <chrono>
+#include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+
+bool server_doc_cache_is_filename(const std::string & name) {
+    if (name.size() < 22 || name[16] != '-' || name.compare(name.size() - 4, 4, ".bin") != 0) {
+        return false;
+    }
+    for (size_t i = 0; i < 16; ++i) {
+        if (!((name[i] >= '0' && name[i] <= '9') || (name[i] >= 'a' && name[i] <= 'f'))) {
+            return false;
+        }
+    }
+    const char * begin = name.data() + 17;
+    const char * end = name.data() + name.size() - 4;
+    if (*begin < '0' || *begin > '9' || (*begin == '0' && end - begin > 1)) {
+        return false;
+    }
+    size_t tokens = 0;
+    const auto parsed = std::from_chars(begin, end, tokens);
+    return parsed.ec == std::errc{} && parsed.ptr == end;
+}
 
 #ifdef _WIN32
 #ifndef NOMINMAX
