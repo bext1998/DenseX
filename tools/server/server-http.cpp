@@ -25,6 +25,27 @@ public:
     int n_threads_http = 0;
 };
 
+// DenseX: classify literal bind addresses without resolving external hostnames.
+static bool bind_host_is_loopback(const std::string & host) {
+    if (host == "localhost" || string_ends_with(host, ".sock")) {
+        return true;
+    }
+    in_addr ipv4{};
+    if (inet_pton(AF_INET, host.c_str(), &ipv4) == 1) {
+        return (ntohl(ipv4.s_addr) >> 24) == 127;
+    }
+    const std::string literal = host.size() > 2 && host.front() == '[' && host.back() == ']'
+        ? host.substr(1, host.size() - 2) : host;
+    in6_addr ipv6{};
+    if (inet_pton(AF_INET6, literal.c_str(), &ipv6) == 1) {
+        if (IN6_IS_ADDR_LOOPBACK(&ipv6)) {
+            return true;
+        }
+        return IN6_IS_ADDR_V4MAPPED(&ipv6) && ipv6.s6_addr[12] == 127;
+    }
+    return false;
+}
+
 class server_http_task_queue : public httplib::TaskQueue {
     httplib::ThreadPool & pool;
 public:
@@ -125,6 +146,10 @@ bool server_http_context::init(const common_params & params) {
     }
 
     pimpl->hosts = params.hostnames;
+    if (params.api_keys.empty() && std::any_of(pimpl->hosts.begin(), pimpl->hosts.end(),
+            [](const std::string & host) { return !bind_host_is_loopback(host); })) {
+        SRV_WRN("%s", "WARNING: non-loopback listener without an API key; reachable clients can access enabled API endpoints\n");
+    }
     size_t n_tcp_hosts = 0;
     for (const auto & host : pimpl->hosts) {
         if (!string_ends_with(host, ".sock")) {
