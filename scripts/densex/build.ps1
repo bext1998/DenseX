@@ -7,7 +7,8 @@
 # -Concurrent builds while an inference process runs (its speed may be perturbed).
 # DenseX: -UI runs npm ci + build from current sources; off skips npm but may embed existing dist assets.
 param([string]$Target = 'llama-server', [string]$Arch = '86', [int]$Jobs = 6, [string]$Name = '', [switch]$Concurrent, [switch]$Tests,
-      [string]$CudaPath = 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0', [string]$Src = '', [string]$BuildRoot = '', [switch]$UI)
+      [string]$CudaPath = 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0', [string]$Src = '', [string]$BuildRoot = '', [switch]$UI,
+      [switch]$LineInfo)
 $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1 turns a native tool's stderr into a terminating error while $ErrorActionPreference is 'Stop'
 # and the output is redirected with *>>. A fresh cmake configure writes warnings to stderr ("Manually-specified
@@ -27,7 +28,11 @@ $src = if ($Src) { $Src } else { (Resolve-Path (Join-Path $PSScriptRoot '../..')
 # building here by default left a stray <repo>/build tree that later runs picked up by mistake.
 if (!$BuildRoot -and (Test-Path (Join-Path $src '../build.ps1'))) { throw "use $(Resolve-Path (Join-Path $src '../build.ps1')) (or pass -BuildRoot)" }
 $root = if ($BuildRoot) { $BuildRoot } else { Join-Path $src 'build' }
-$build = Join-Path $root ($(if ($Name) { $Name } else { 'sm' + ($Arch -replace ';', '-') }))
+$buildName = if ($Name) { $Name } else { 'sm' + ($Arch -replace ';', '-') }
+# -lineinfo (2026-11-16, issue #76): device code keeps source line information for compute-sanitizer. It must never
+# reach the production build, because it changes the binary and the whole point is that build/sm86 is the reference.
+if ($LineInfo -and $buildName -eq 'sm86') { throw '-LineInfo must not be used with the production build name sm86; pass -Name <debug name> (e.g. san)' }
+$build = Join-Path $root $buildName
 New-Item -ItemType Directory -Force $root | Out-Null
 $log = Join-Path $root ("build-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.log')
 function Log($m) { "$(Get-Date -Format 'HH:mm:ss') $m" | Tee-Object -Append -FilePath $log }
@@ -58,7 +63,11 @@ try {
         '-DLLAMA_LLGUIDANCE=OFF', '-DFETCHCONTENT_FULLY_DISCONNECTED=ON',
         '-DLLAMA_BUILD_SERVER=ON', '-DLLAMA_BUILD_COMMON=ON', '-DLLAMA_BUILD_TOOLS=ON',
         $(if ($Tests) { '-DLLAMA_BUILD_TESTS=ON' } else { '-DLLAMA_BUILD_TESTS=OFF' }), '-DLLAMA_BUILD_EXAMPLES=OFF', '-DLLAMA_BUILD_APP=OFF')
-    Log "configure"
+    # Issue #76: only appended when asked, so the configure line without -LineInfo is byte-for-byte what it was.
+    # The value must keep CMake's own Windows/MSVC CUDA init string instead of replacing it (a bare
+    # -DCMAKE_CUDA_FLAGS=-lineinfo drops "-D_WINDOWS -Xcompiler=\" /EHsc\"" from the cache); '-lineinfo' is appended.
+    if ($LineInfo) { $configure += '-DCMAKE_CUDA_FLAGS=-D_WINDOWS -Xcompiler=" /EHsc" -lineinfo' }
+    Log $(if ($LineInfo) { 'configure (lineinfo on)' } else { 'configure' })
     Invoke-Native 'configure' { cmake @configure *>> $log } | Out-Null
     # Objects whose header deps ninja did not record (cl's localized /showIncludes prefix does not always match, e.g.
     # when built from a UTF-8 console) are not rebuilt after a header change, which mixed old and new llama_model
