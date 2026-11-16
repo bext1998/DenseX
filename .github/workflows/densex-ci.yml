@@ -1,4 +1,4 @@
-# DenseX CI: CPU-only build and llama_context state tests on a generated Qwen35 dummy model
+# DenseX CI: CPU-only allowlisted tests and llama_context state tests on a generated Qwen35 dummy model
 # (save/load/copy/rollback/replay...), with deferred GDN commit on (default) and off.
 # GitHub runners have no GPU; GPU op tests and output checks run locally (research workspace bench/regress.ps1).
 name: DenseX CI
@@ -27,11 +27,57 @@ jobs:
         run: >
           cmake -S . -B build -G "Visual Studio 17 2022" -A x64
           -DGGML_CUDA=OFF -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=ON -DLLAMA_BUILD_COMMON=ON
-          -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_APP=OFF
+          -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_APP=OFF
           -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_LLGUIDANCE=OFF
 
       - name: Build tests
-        run: cmake --build build --config Release --parallel --target test-llama-archs test-llama-context
+        run: cmake --build build --config Release --parallel
+
+      - name: CPU tests (allowlist)
+        shell: pwsh
+        env:
+          CTEST_BUILD_DIR: build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = $env:CTEST_BUILD_DIR
+          $listPath = Join-Path $env:GITHUB_WORKSPACE 'tests/densex-ci-tests.txt'
+          $tests = @(Get-Content -LiteralPath $listPath | ForEach-Object { $_.Trim() } |
+              Where-Object { $_ -and !$_.StartsWith('#') })
+          if ($tests.Count -eq 0) { throw 'CPU test allowlist is empty' }
+          $expected = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+          foreach ($name in $tests) {
+              if (!$expected.Add($name)) { throw "Duplicate allowlist entry: $name" }
+          }
+          function Assert-TestNames([string[]]$Names, [string]$Phase) {
+              if ($Names.Count -ne $tests.Count) {
+                  throw "${Phase}: expected $($tests.Count) tests, got $($Names.Count)"
+              }
+              $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+              foreach ($name in $Names) {
+                  if (!$expected.Contains($name) -or !$seen.Add($name)) {
+                      throw "${Phase}: unexpected or duplicate test: $name"
+                  }
+              }
+          }
+          $pattern = '^(' + (($tests | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'
+          $selection = & ctest --test-dir $buildDir -C Release -R $pattern --show-only=json-v1
+          $selectionCode = $LASTEXITCODE
+          if ($selectionCode -ne 0) { throw "ctest selection failed: $selectionCode" }
+          $registered = ($selection -join "`n") | ConvertFrom-Json
+          Assert-TestNames @($registered.tests | ForEach-Object { $_.name }) 'Selected tests'
+          $junit = [IO.Path]::GetFullPath((Join-Path $buildDir 'densex-ci-junit.xml'))
+          & ctest --test-dir $buildDir -C Release -R $pattern --no-tests=error --output-on-failure --timeout 300 -j 4 --output-junit $junit
+          $testCode = $LASTEXITCODE
+          if ($testCode -ne 0) { throw "ctest failed: $testCode" }
+          [xml]$results = Get-Content -LiteralPath $junit -Raw
+          $cases = @($results.SelectNodes('//testcase'))
+          Assert-TestNames @($cases | ForEach-Object { $_.GetAttribute('name') }) 'Completed tests'
+          foreach ($case in $cases) {
+              if ($case.GetAttribute('status') -ne 'run' -or $case.SelectSingleNode('failure|error|skipped')) {
+                  throw "Test did not pass: $($case.GetAttribute('name'))"
+              }
+          }
+          Write-Host "CPU_CTEST_PASS $($cases.Count)/$($tests.Count)"
 
       - name: Generate Qwen35 dummy model
         shell: pwsh

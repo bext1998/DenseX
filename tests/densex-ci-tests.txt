@@ -1,0 +1,40 @@
+# CPU tests allowlist (issue #76 P0-1): passed in the full run at DenseX/bench/results/cpu_tests/1116-091457,
+# each under 30 s. Excluded-by-design tests (network/model/GPU/python) and the 16 tokenizer tests gated by the
+# DenseX arch whitelist are intentionally absent. Regenerate with run_cpu_tests.ps1 after any change.
+test-unicode
+test-sampling
+test-reasoning-budget
+test-grammar-parser
+test-grammar-integration
+test-llama-grammar
+test-batch-alloc
+test-draft-kv-window
+test-draft-kv-window-args
+test-kv-storage-contract
+test-mtp-seq-nmax
+test-json-schema-to-grammar
+test-generate-models
+test-llama-context
+test-chat-peg-parser
+test-jinja
+test-json-schema
+test-chat-auto-parser
+test-chat-template
+test-log
+test-peg-parser
+test-arg-parser
+test-model-resolution
+test-opt
+test-gdn-deferred
+test-tiled-mulmat
+test-model-load-cancel
+test-autorelease
+test-backend-sampler
+test-barrier
+test-quantize-fns
+test-quantize-perf
+test-rope
+test-col2im-1d
+test-conv-1d
+test-gguf
+test-alloc
