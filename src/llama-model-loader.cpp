@@ -639,6 +639,9 @@ llama_model_loader::llama_model_loader(
                     if (kid < 0) {
                         throw std::runtime_error(format("missing key %s in GGUF split %s", kv_split_no.c_str(), fname_split));
                     }
+                    if (gguf_get_kv_type(ctx_gguf.get(), kid) != GGUF_TYPE_UINT16) {
+                        throw std::runtime_error("split.no must be a UINT16 scalar");
+                    }
                     int idx_gguf = gguf_get_val_u16(ctx_gguf.get(), kid);
                     if (idx_gguf != idx) {
                         throw std::runtime_error(format("invalid split file idx: %d (file: %s), expected %d", idx_gguf, fname_split, idx));

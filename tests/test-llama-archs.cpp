@@ -10,6 +10,7 @@
 // TODO: replace with #include "llama-ext.h" in the future
 #include "../src/llama-arch.h"
 #include "../src/llama-model-saver.h"
+#include "../src/llama-model-loader.h"
 
 #include <cinttypes>
 #include <cmath>
@@ -23,6 +24,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <filesystem>
 
 static bool arch_matches(const std::string & filter, llm_arch arch) {
     if (filter.empty()) {
@@ -1142,7 +1144,44 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
     return all_ok ? 0 : 1;
 }
 
+static int test_split_metadata(const std::string & directory) {
+    std::filesystem::create_directories(directory);
+    const std::string first = directory + "/first.gguf";
+    const std::string second = directory + "/second.gguf";
+    gguf_context_ptr meta(gguf_init_empty());
+    gguf_set_val_str(meta.get(), "general.architecture", "llama");
+    gguf_set_val_u16(meta.get(), "split.count", 2);
+    gguf_set_val_u16(meta.get(), "split.no", 0);
+    GGML_ASSERT(gguf_write_to_file(meta.get(), first.c_str(), true));
+    for (int variant = 0; variant < 3; ++variant) {
+        gguf_context_ptr shard(gguf_init_empty());
+        if (variant == 0) {
+            gguf_set_val_str(shard.get(), "split.no", "1");
+        } else if (variant == 1) {
+            gguf_set_val_u32(shard.get(), "split.no", 1);
+        } else {
+            const uint16_t value = 1;
+            gguf_set_arr_data(shard.get(), "split.no", GGUF_TYPE_UINT16, &value, 1);
+        }
+        GGML_ASSERT(gguf_write_to_file(shard.get(), second.c_str(), true));
+        std::vector<std::string> splits{first, second};
+        bool rejected = false;
+        try {
+            llama_model_loader loader(nullptr, nullptr, nullptr, first, splits, nullptr,
+                    LLAMA_LOAD_MODE_NONE, false, false, false, nullptr, nullptr);
+        } catch (const std::runtime_error & error) {
+            rejected = std::string(error.what()) == "split.no must be a UINT16 scalar";
+        }
+        GGML_ASSERT(rejected);
+    }
+    printf("split metadata: 3/3 checks passed\n");
+    return 0;
+}
+
 int main(int argc, char ** argv) {
+    if (argc == 3 && std::string(argv[1]) == "--split-metadata") {
+        return test_split_metadata(argv[2]);
+    }
     // init the logger at max verbosity. filter with a custom callback respecting the user-configure verbosity
     common_log_set_verbosity_thold(LOG_LEVEL_DEBUG);
     common_init();
