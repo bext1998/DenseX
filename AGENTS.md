@@ -16,15 +16,15 @@ In practice:
 
 `README.md` (what DenseX is, switches, build). When this checkout sits inside the owner's private research workspace, project rules live there as well:
 - `../../AGENTS.md`: project rules and collaboration.
+- `../SPEC.md` (section 12: version control), `../NOTES.md` (experiment log), `../MEMORY_AUDIT.md`.
 
 Work items are tracked as GitHub issues (https://github.com/bext1998/DenseX/issues): take work from an issue, label it `in-progress` while working, comment the result (numbers, commit) and close it. Issues are public: no agent costs, local absolute paths or personal data.
-- `../SPEC.md` (section 12: version control), `../NOTES.md` (experiment log), `../MEMORY_AUDIT.md`.
 
 ## Version control
 
 - Commit directly to `densex` when a change is done and verified. No push, no PR, no new remote without the owner's approval.
 - Commit message: what changed, why, the switch and its default, and the measurement it is based on (result paths, numbers).
-- Every behavior change sits behind a switch (env var or flag) that is off by default, with the original path kept as the reference. Pure refactors and cleanups need no switch (see Ownership).
+- Behavior changes need an off-by-default switch (env var or flag); pure refactors do not (see Ownership).
 
 ## Upstream
 
