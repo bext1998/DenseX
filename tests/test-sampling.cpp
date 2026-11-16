@@ -335,7 +335,30 @@ static void test_perf() {
     BENCH(llama_sampler_init_xtc    (1.0f, 0.1f, 1, 1),       data, 32);
 }
 
+static void test_mirostat_bounds() {
+    for (float tau : {-1000000.0f, 5.0f, 1000000.0f}) {
+        for (bool uniform : {false, true}) {
+            auto * sampler = llama_sampler_init_mirostat(8, 76, tau, 0.1f, 100);
+            for (int step = 0; step < 3; ++step) {
+                std::vector<llama_token_data> tokens;
+                for (int i = 0; i < 8; ++i) {
+                    tokens.push_back({i, uniform ? 0.0f : -static_cast<float>(i), 0.0f});
+                }
+                llama_token_data_array data{tokens.data(), tokens.size(), -1, false};
+                llama_sampler_apply(sampler, &data);
+                GGML_ASSERT(data.size >= 1 && data.size <= tokens.size());
+                GGML_ASSERT(data.selected >= 0 && static_cast<size_t>(data.selected) < data.size);
+                for (size_t i = 0; i < data.size; ++i) {
+                    GGML_ASSERT(std::isfinite(data.data[i].p));
+                }
+            }
+            llama_sampler_free(sampler);
+        }
+    }
+}
+
 int main(void) {
+    test_mirostat_bounds();
     ggml_time_init();
 
     test_dist_singleton_rng();

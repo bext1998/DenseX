@@ -2484,7 +2484,10 @@ static void llama_sampler_mirostat_apply(struct llama_sampler * smpl, llama_toke
     float epsilon_hat = s_hat - 1;
     float k = powf((epsilon_hat * powf(2, ctx->mu)) / (1 - powf(ctx->n_vocab, -epsilon_hat)), 1 / s_hat);
 
-    llama_sampler_top_k_impl(cur_p, std::max(int(k), 1));
+    // DenseX: bound the floating-point result before converting to a token count.
+    const double max_k = static_cast<double>(std::min<size_t>(cur_p->size, INT32_MAX));
+    const int bounded_k = std::isnan(k) ? 1 : static_cast<int>(std::clamp<double>(k, 1.0, max_k));
+    llama_sampler_top_k_impl(cur_p, bounded_k);
 
     llama_sampler_softmax_impl(cur_p, true);
 
