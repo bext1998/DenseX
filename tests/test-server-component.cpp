@@ -540,6 +540,23 @@ static void test_doc_cache_async(testing & t) {
     t.assert_true("drained work can publish", drained && drain.publish(*drained));
 }
 
+static void test_rerank_limit(testing & t) {
+    const json ranks = json::array({json{{"index", 0}, {"score", 0.5}}, json{{"index", 1}, {"score", 0.8}}});
+    std::vector<std::string> texts{"a", "b"};
+    bool rejected = false;
+    try {
+        format_response_rerank(json::object(), "test", ranks, true, texts, -1);
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    t.assert_true("negative limit rejected", rejected);
+    t.assert_equal("zero limit", (size_t) 0, format_response_rerank(json::object(), "test", ranks, true, texts, 0).size());
+    const auto result = format_response_rerank(json::object(), "test", ranks, true, texts, 1);
+    t.assert_equal("one result", (size_t) 1, result.size());
+    t.assert_equal("highest score", 1, result[0]["index"].get<int>());
+    t.assert_equal("limit above document count", (size_t) 2, format_response_rerank(json::object(), "test", ranks, true, texts, 100).size());
+}
+
 static void test_doc_cache_names(testing & t) {
     for (const char * name : {"0123456789abcdef-0.bin", "ffffffffffffffff-1024.bin"}) {
         t.assert_true(name, server_doc_cache_is_filename(name));
@@ -573,6 +590,7 @@ int main(int argc, char ** argv) {
     t.test("decision_escape", test_decision_escape);
     t.test("doc_cache_async", test_doc_cache_async);
     t.test("doc_cache_names", test_doc_cache_names);
+    t.test("rerank_limit", test_rerank_limit);
 
     return t.summary();
 }

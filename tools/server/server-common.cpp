@@ -1634,6 +1634,9 @@ json format_response_rerank(
         bool is_tei_format,
         std::vector<std::string> & texts,
         int top_n) {
+    if (top_n < 0) {
+        throw std::invalid_argument("top_n must be non-negative");
+    }
     int32_t n_tokens = 0;
     bool return_text = is_tei_format && json_value(request, "return_text", false);
     std::vector<json> elements; // Temporary vector to hold unsorted elements

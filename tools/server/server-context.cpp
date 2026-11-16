@@ -6614,6 +6614,10 @@ void server_routes::init_routes() {
         }
 
         int top_n = json_value(body, "top_n", (int)documents.size());
+        if (top_n < 0) {
+            res->error(format_error_response("top_n must be non-negative", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
 
         // create and queue the task
         json responses = json::array();
