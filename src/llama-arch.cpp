@@ -6,7 +6,6 @@
 #include <vector>
 
 static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
-    { LLM_ARCH_CLIP,             "clip"             }, // mmproj/GGUF arch name, kept for diagnostics
     { LLM_ARCH_QWEN35,           "qwen35"           },
     { LLM_ARCH_DFLASH,           "dflash"           },
     { LLM_ARCH_UNKNOWN,          "(unknown)"        },

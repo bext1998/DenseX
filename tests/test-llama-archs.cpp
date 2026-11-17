@@ -430,9 +430,9 @@ static bool moe_implemented(const llm_arch arch) {
 
 static bool arch_supported(const llm_arch arch) {
     // DenseX only runs qwen35-family models (issue #10): generate and test exactly the arches
-    // the factory still builds. After issue #86 phase 5 the enum only holds clip/qwen35/dflash/
-    // unknown, dflash has no dummy fixture (save_models skips it anyway), and qwen35moe was
-    // dropped with MoE support in phase 4 - so this is the whole supported set.
+    // the factory still builds. After issue #86 batch 4 the enum only holds qwen35/dflash/unknown
+    // (clip left with batch 4), dflash has no dummy fixture (save_models skips it anyway), and
+    // qwen35moe was dropped with MoE support in phase 4 - so this is the whole supported set.
     return arch == LLM_ARCH_QWEN35;
 }
 

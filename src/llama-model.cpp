@@ -72,7 +72,15 @@ llama_model * llama_model_create(llm_arch arch, const llama_model_params & param
 llama_model * llama_model_create(llama_model_loader & ml, const llama_model_params & params) {
     llm_arch arch = ml.get_arch();
     if (arch == LLM_ARCH_UNKNOWN) {
-        throw std::runtime_error("unknown model architecture: '" + ml.get_arch_name() + "'");
+        const std::string arch_name = ml.get_arch_name();
+        // "clip" left the arch enum with issue #86 batch 4, but a mmproj passed as the main model
+        // still deserves its own hint instead of a bare "unknown architecture". String compare only:
+        // no enum entry comes back for it.
+        if (arch_name == "clip") {
+            throw std::runtime_error(
+                    "this GGUF is a vision projector (mmproj), not a model: load it with --mmproj instead of -m");
+        }
+        throw std::runtime_error("unknown model architecture: '" + arch_name + "'");
     }
 
     return llama_model_create(arch, params);

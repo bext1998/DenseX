@@ -12,9 +12,8 @@
 
 enum llm_arch {
     // Only the arches the factory still builds (issue #86): qwen35 is the main model and
-    // dflash the draft model. clip is kept so a mmproj GGUF is named in the factory error
-    // instead of showing up as "unknown"; UNKNOWN keeps the reject-unknown-name behaviour.
-    LLM_ARCH_CLIP,
+    // dflash the draft model. UNKNOWN keeps the reject-unknown-name behaviour; the name of an
+    // unknown arch still reaches the loader error, so "clip" gets its own hint there by string.
     LLM_ARCH_QWEN35,
     LLM_ARCH_DFLASH,
     LLM_ARCH_UNKNOWN,
