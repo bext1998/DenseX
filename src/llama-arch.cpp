@@ -82,7 +82,6 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_DEEPSEEK2,        "deepseek2"        },
     { LLM_ARCH_DEEPSEEK2OCR,     "deepseek2-ocr"    },
     { LLM_ARCH_DEEPSEEK32,       "deepseek32"       },
-    { LLM_ARCH_DEEPSEEK4,        "deepseek4"        },
     { LLM_ARCH_CHATGLM,          "chatglm"          },
     { LLM_ARCH_GLM4,             "glm4"             },
     { LLM_ARCH_GLM4_MOE,         "glm4moe"          },
@@ -1208,7 +1207,6 @@ bool llm_arch_is_hybrid(const llm_arch & arch) {
         case LLM_ARCH_GLM5_NEXT:
         case LLM_ARCH_QWEN35:
         case LLM_ARCH_QWEN4EXP:
-        case LLM_ARCH_DEEPSEEK4:
         case LLM_ARCH_MINIMAX_01:
             return true;
         default:
@@ -1233,7 +1231,6 @@ bool llm_arch_supports_rs_rollback(const llm_arch & arch) {
         case LLM_ARCH_KIMI_K3:
         case LLM_ARCH_QWEN35:
         case LLM_ARCH_QWEN4EXP:
-        case LLM_ARCH_DEEPSEEK4:
         case LLM_ARCH_GLM5_NEXT:
         case LLM_ARCH_NEMOTRON_H:
         case LLM_ARCH_NEMOTRON_H_MOE:
@@ -1250,7 +1247,6 @@ bool llm_arch_supports_rs_rollback(const llm_arch & arch) {
 bool llm_arch_supports_mixed_batch(const llm_arch & arch) {
     switch (arch) {
         case LLM_ARCH_COGVLM:
-        case LLM_ARCH_DEEPSEEK4:
         case LLM_ARCH_GRANITE_SWITCH:
         case LLM_ARCH_EAGLE3:
         case LLM_ARCH_DFLASH:
