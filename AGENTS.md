@@ -1,31 +1,53 @@
-# DenseX engine (fork of llama.cpp)
+# DenseX 推論引擎（llama.cpp 的 fork）
 
-This is the single rule file for this repository. It holds the base rules every agent follows. Detailed rules live in `docs/densex/rules/`; read them when the task needs them (see the index below).
+這是本 repo 唯一的規則入口，只放每個 agent 都要遵守的基本規則。細則放在 `docs/densex/rules/`，工作需要時再讀，見最後的規則目錄。
 
-DenseX is a home inference engine for dense models on low-VRAM GPUs. It started from llama.cpp `620d2225` and is maintained as an independent project on branch `densex`. The upstream contributor rules (issues before PRs, no AI commits, `Assisted-by`, PR etiquette) do not apply here. The original upstream file is in git history (`git show 620d222:AGENTS.md`).
+DenseX 是給低 VRAM 顯示卡使用的家用稠密模型推論引擎。它從 llama.cpp `620d2225` 分出，在 `densex` 分支上獨立維護。上游的貢獻者規則不適用於這裡，例如先開 issue 再送 PR、禁止 AI commit、`Assisted-by` 標記和 PR 禮儀。上游原本的檔案保留在 git 歷史裡（`git show 620d222:AGENTS.md`）。
 
-## Ownership (owner rule, 2026-11-11)
+## 所有權（擁有者規則，2026-11-11）
 
 這個推論引擎的程式碼以 llama.cpp 為基礎修改，並獨立於 llama.cpp 之外。你（AI agent）與人類共同擁有並管理這些程式碼：在能力所及的範圍內修改、重構、維護、清理不必要的程式碼，並持續提升推論引擎的性能與效率。
 
-## Base rules
+## 基本規則
 
-1. **Refactor and clean up freely, inside git.** Removing code DenseX does not use (other backends, model architectures, tools) is in scope; git history keeps it recoverable. Deleting untracked files, models or data outside git needs the owner's approval.
-2. **Behavior changes sit behind a switch that is off by default** (speed paths, numerics, memory layout), with the old path kept as the reference, until measured and accepted.
-3. **Pure refactors keep behavior identical**: same temperature-0 output and the affected tests passing, verified before commit. Never weaken a test, golden value or threshold to make a run pass.
-4. **Version control**: commit directly to `densex` when a change is done and verified, one focused change per commit. No push, no PR, no new remote without the owner's approval. Commit messages say what changed, why, the switch and its default, and the measurement it is based on.
-5. **Issues are public** (https://github.com/bext1998/DenseX/issues): take work from an issue, label it `in-progress`, comment the result (numbers, commit) and close it. No agent costs, local absolute paths or personal data.
-6. **One GPU job at a time** on the target machine; tool calling must keep passing 14/14 (see `docs/densex/rules/TESTING.md`).
-7. **Upstream is frozen** at llama.cpp `620d2225` (owner decision 2026-11-11). Later upstream changes are outside references only: evaluate one at a time, write our own version, and ask the owner before porting.
-8. **Delegate execution, not judgment.** Owner involvement scales with risk. Low-risk, easily reverted details: decide and state the assumption. Choices that change direction, scope, cost, quality bars or are hard to undo: do not decide alone; lay out 2-3 options with their trade-offs and the assumptions behind each, and put any leaning of your own last. The owner's own proposals may be challenged too, once, with reasons.
+1. **在 git 裡可以放手重構與清理。**
+   - 移除 DenseX 用不到的程式碼，例如其他 backend、模型架構或工具，都在範圍內，git 歷史可以找回來。
+   - 刪除 git 以外的檔案、模型或資料，要先取得擁有者同意。
+2. **行為改變要放在預設關閉的開關後面**，例如速度路徑、數值或記憶體配置。舊路徑要保留作為對照，等實測並接受後才改預設。
+3. **純重構必須讓行為完全不變**：commit 前要確認 temperature 0 的輸出相同，受影響的測試也都通過。不得為了讓測試通過而放寬測試、golden 值或門檻。
+4. **版本控制**：
+   - 改動完成並驗證後，直接 commit 到 `densex`，一個 commit 只做一件事。
+   - 沒有擁有者同意，不 push、不開 PR、不新增 remote。
+   - commit 訊息要寫：改了什麼、為什麼、開關與預設值，以及根據的量測結果。
+5. **Issue 是公開的**（https://github.com/bext1998/DenseX/issues）：
+   - 從 issue 領工作，加上 `in-progress` 標籤，完成後留言結果（數字、commit），再關閉。
+   - 不寫 agent 花費、本機絕對路徑或個人資料。
+6. **目標機器上，GPU 同時只跑一項工作**；工具調用測試必須維持 14/14，見 `docs/densex/rules/TESTING.md`。
+7. **上游凍結在 llama.cpp `620d2225`**（擁有者 2026-11-11 決定）。
+   - 之後的上游改動只當外部參考：一次評估一項，寫我們自己的版本。
+   - 移植前要先問擁有者。
+8. **執行可以委託，判斷不能外包**：擁有者介入的程度與風險成正比。
+   - 低風險、容易回復的細節：自己決定，並交代採用的前提。
+   - 會改變方向、範圍、成本、品質標準，或難以回復的選擇：不要自己拍板。提出 2～3 個做法、各自的利弊與背後的前提；自己的傾向放在最後。
+   - 擁有者的提議也可以質疑，附上理由，同一件事只質疑一次。
+9. **文件語言**（擁有者 2026-11-18 決定）：
+   - 對內文件一律用正體中文。包括本檔、`docs/densex/rules/`、`skills/`、`.pi/`，以及其他寫給 agent 或維護者看的規則、流程。
+   - 對外文件可以用英文或中文，例如 `README.md`、`CONTRIBUTING.md`、`SECURITY.md` 與 `docs/densex/` 底下的使用說明。
+   - 程式碼註解：新註解用正體中文，`ggml/`（含 CUDA）例外，維持英文 ASCII。細則與理由見 `docs/densex/rules/CODE_STYLE.md`。
+   - commit 訊息與 issue 是公開的，沿用英文。
+   - 引用程式識別名稱、檔名、指令與英文文件的章節標題時，保留原文。
 
-## Rule index (read when needed)
+## 規則目錄（需要時再讀）
 
-| File | When to read it |
+| 檔案 | 什麼時候讀 |
 |---|---|
-| `docs/densex/rules/CODE_STYLE.md` | Writing or reviewing code: style, comments, naming |
-| `docs/densex/rules/TESTING.md` | Building, testing, measuring, or before any commit |
-| `CONTRIBUTING.md` | How work flows through this repo, licensing and credits |
-| `README.md` | What DenseX is, its switches, how to build |
+| `docs/densex/rules/CODE_STYLE.md` | 寫程式或審查程式：風格、註解、命名 |
+| `docs/densex/rules/TESTING.md` | 建置、測試、量測，以及任何 commit 之前 |
+| `CONTRIBUTING.md` | 工作在本 repo 的流程、授權與致謝（對外文件，英文） |
+| `README.md` | DenseX 是什麼、有哪些開關、怎麼建置（對外文件） |
 
-When this checkout sits inside the owner's private research workspace, the workspace rules also apply: `../../AGENTS.md` (entry point), `../SPEC.md` (section 12: version control), `../NOTES.md` (experiment log), `../MEMORY_AUDIT.md`.
+如果這份 checkout 放在擁有者的私人研究工作區裡，也要遵守工作區的規則：
+- `../../AGENTS.md`（入口）；
+- `../SPEC.md`（第 12 節：版本控制）；
+- `../NOTES.md`（實驗紀錄）；
+- `../MEMORY_AUDIT.md`。

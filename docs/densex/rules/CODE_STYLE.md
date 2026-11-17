@@ -1,10 +1,30 @@
-# Code style
+# 程式風格
 
-Applies when writing or reviewing code. Base rules are in the root `AGENTS.md`.
+寫程式或審查程式時適用。基本規則在根目錄的 `AGENTS.md`。
 
-- Blend in with the surrounding code. Reuse existing infrastructure, or replace it when it blocks a DenseX need; do not add parallel subsystems that duplicate it.
-- Keep code comments short (1-2 lines), only where needed, in simple English, explaining *why*. Mark DenseX changes with a `DenseX` prefix in the comment.
-- Use ASCII only in code and comments: `-`, `->`, `x`, `...` instead of em dash, arrows, multiplication sign or ellipsis.
-- Do not hard-wrap comments or split a line mid-sentence to fit a column width.
-- Naming keeps the llama.cpp conventions: `snake_case` functions, longest-common-prefix naming, `kebab-case` file names for C/C++, enum values upper case and prefixed with the enum name.
-- llama.cpp has its own Jinja engine in `common/jinja` (not Minja). Any mention of Minja is wrong for this codebase.
+## 一般原則
+
+- 融入周圍的程式碼。
+  - 重用既有的基礎設施；它妨礙 DenseX 的需求時，就直接替換掉。
+  - 不要新增功能重複的平行子系統。
+
+## 註解（擁有者 2026-11-18 決定）
+
+- **共同原則**：
+  - 簡短（1～2 行），只在需要的地方寫，說明「為什麼」。
+  - DenseX 自己的改動，註解開頭標 `DenseX`。
+- **一般情況**：新寫的註解用正體中文。適用於 `src/`、`common/`、`tools/`、`tests/` 的 C/C++，以及 Python、PowerShell、CMake。中文註解可以用全形標點。
+- **例外**：`ggml/` 整個目錄（含 CUDA 的 `.cu`／`.cuh`）的註解，維持簡單英文，而且只用 ASCII。
+  - 理由：`.cu` 檔由 nvcc 交給 MSVC 編譯，這條路徑沒有設定 `/utf-8`。中文可能被當成 cp950 誤解碼，最壞的情況是吃掉下一行程式碼，而且編譯不會報錯。
+  - `ggml/` 裡的標頭會被 `.cu` include，所以整個目錄一起列為例外。
+- **既有的英文註解**：不需要整批翻譯。修改到某段註解時，可以順便改寫成中文（`ggml/` 除外）。
+- 註解不要為了配合欄寬硬換行，也不要把一句話拆成好幾行。
+
+## 程式碼本身
+
+- 程式碼只用 ASCII，包括識別名稱、字串常數和 log 訊息：用 `-`、`->`、`x`、`...`，不用破折號、箭頭、乘號或刪節號。
+- 命名沿用 llama.cpp 的慣例：
+  - 函式用 `snake_case`，命名採「最長共同前綴」；
+  - C/C++ 檔名用 `kebab-case`；
+  - enum 值全大寫，並以 enum 名稱為前綴。
+- llama.cpp 在 `common/jinja` 有自己的 Jinja 引擎，不是 Minja。這個 codebase 裡任何提到 Minja 的地方都是錯的。
