@@ -97,7 +97,7 @@ The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-or
 - [GGML tips & tricks](https://github.com/ggml-org/llama.cpp/wiki/GGML-Tips-&-Tricks)
 - [Completions](docs/completions.md)
 - [Models](docs/models.md)
-- [Release process](docs/release.md)
+- Release process: upstream only [docs/release.md](https://github.com/ggml-org/llama.cpp/blob/master/docs/release.md) (not carried into this fork)
 
 ## Contributing
 
