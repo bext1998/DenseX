@@ -307,8 +307,7 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
     // if a model has fused tensors they need to be separated into "segments", see the comments on ggml_backend_meta_split_state struct
     auto get_split_segments = [&](int axis, uint32_t il) -> std::vector<std::pair<int64_t, uint32_t>> {
         // TODO: deduplicate condition [TAG_SPLIT_QGATE_QWEN]
-        if (ud->model->arch == LLM_ARCH_QWEN3NEXT || ud->model->arch == LLM_ARCH_QWEN35 || ud->model->arch == LLM_ARCH_CLEF ||
-                ud->model->arch == LLM_ARCH_QWEN4EXP) {
+        if (ud->model->arch == LLM_ARCH_QWEN35) {
 
             // fused full attention layers with Q gate tensors that need n_embd doubled:
             if (!hparams.is_recr(il) && (std::regex_match(tensor_name, pattern_qkv_weight) || std::regex_match(tensor_name, pattern_qkv_bias))) {
@@ -326,39 +325,28 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             const int64_t key_dim    = head_k_dim * n_k_heads;
             const int64_t value_dim  = head_v_dim * n_v_heads;
 
-            // both Qwen 3 Next and Qwen 3.5 support n_v_heads > n_k_heads but the broadcasting pattern is different:
-            //   - Qwen 3 Next: [k0_v0, k0_v1, k1_v2, k1_v3] (this is the default split pattern)
-            //   - Qwen 3.5:    [k0_v0, k1_v1, k0_v2, k1_v3] (needs segmenting of V on the scale of K to get the correct pattern)
-            if (ud->model->arch == LLM_ARCH_QWEN3NEXT) {
-                if (std::regex_match(tensor_name, pattern_qkv_weight) || std::regex_match(tensor_name, pattern_ssm_conv1d)) {
-                    GGML_ASSERT(tensor->ne[axis] == 2*key_dim + value_dim);
-                    return {{key_dim, 2}, {value_dim, 1}};
-                }
-                if (std::regex_match(tensor_name, pattern_r_cache)) {
-                    return {{key_dim * (hparams.ssm_d_conv - 1), 2}, {value_dim * (hparams.ssm_d_conv - 1), 1}};
-                }
-            } else {
-                const int64_t head_ratio = n_v_heads / n_k_heads;
-                if (std::regex_match(tensor_name, pattern_qkv_weight) || std::regex_match(tensor_name, pattern_ssm_conv1d)) {
-                    GGML_ASSERT(tensor->ne[axis] == 2*key_dim + value_dim);
-                    return {{key_dim, 2 + head_ratio}};
-                }
-                if (std::regex_match(tensor_name, pattern_attn_gate_weight) || std::regex_match(tensor_name, pattern_ssm_out_weight)) {
-                    return {{key_dim, head_ratio}};
-                }
-                if (std::regex_match(tensor_name, pattern_ssm_dt) || std::regex_match(tensor_name, pattern_ssm_a) ||
-                        std::regex_match(tensor_name, pattern_ssm_alpha) || std::regex_match(tensor_name, pattern_ssm_beta)) {
-                    return {{n_k_heads, head_ratio}};
-                }
-                if (std::regex_match(tensor_name, pattern_r_cache)) {
-                    return {{key_dim * (hparams.ssm_d_conv - 1), 2 + head_ratio}};
-                }
-                if (std::regex_match(tensor_name, pattern_s_cache)) {
-                    return {{n_k_heads * head_v_dim * head_v_dim, head_ratio}};
-                }
+            // Qwen 3.5 supports n_v_heads > n_k_heads and segments V on the scale of K:
+            //   [k0_v0, k1_v1, k0_v2, k1_v3]
+            const int64_t head_ratio = n_v_heads / n_k_heads;
+            if (std::regex_match(tensor_name, pattern_qkv_weight) || std::regex_match(tensor_name, pattern_ssm_conv1d)) {
+                GGML_ASSERT(tensor->ne[axis] == 2*key_dim + value_dim);
+                return {{key_dim, 2 + head_ratio}};
+            }
+            if (std::regex_match(tensor_name, pattern_attn_gate_weight) || std::regex_match(tensor_name, pattern_ssm_out_weight)) {
+                return {{key_dim, head_ratio}};
+            }
+            if (std::regex_match(tensor_name, pattern_ssm_dt) || std::regex_match(tensor_name, pattern_ssm_a) ||
+                    std::regex_match(tensor_name, pattern_ssm_alpha) || std::regex_match(tensor_name, pattern_ssm_beta)) {
+                return {{n_k_heads, head_ratio}};
+            }
+            if (std::regex_match(tensor_name, pattern_r_cache)) {
+                return {{key_dim * (hparams.ssm_d_conv - 1), 2 + head_ratio}};
+            }
+            if (std::regex_match(tensor_name, pattern_s_cache)) {
+                return {{n_k_heads * head_v_dim * head_v_dim, head_ratio}};
             }
 
-            // the FFN is the same for Qwen 3 Next and Qwen 3.5:
+            // the FFN is the same for every arch handled here:
             if (std::regex_match(tensor_name, pattern_ffn_gate_up_weight)) {
                 const int64_t n_ff_exp = hparams.n_ff_exp(il);
                 GGML_ASSERT(tensor->ne[axis] == 2*n_ff_exp);
@@ -462,8 +450,7 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
                 GGML_ASSERT(segments.size() == 1);
                 // some models have Q gate tensors, for those cases the granularity needs to be doubled:
                 // TODO: deduplicate condition [TAG_SPLIT_QGATE_QWEN]
-                if (ud->model->arch == LLM_ARCH_QWEN3NEXT || ud->model->arch == LLM_ARCH_QWEN35 || ud->model->arch == LLM_ARCH_CLEF ||
-                        ud->model->arch == LLM_ARCH_QWEN4EXP) {
+                if (ud->model->arch == LLM_ARCH_QWEN35) {
                     return {std::lcm(2*n_embd_q, blck_size_perf)};
                 }
                 return {granularity_q};
@@ -496,8 +483,7 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             if (std::regex_match(tensor_name, pattern_qkv_weight) || std::regex_match(tensor_name, pattern_qkv_bias)) {
                 // fused full attention layers need Q gate tensors handled like above:
                 // TODO: deduplicate condition [TAG_SPLIT_QGATE_QWEN]
-                if (ud->model->arch == LLM_ARCH_QWEN3NEXT || ud->model->arch == LLM_ARCH_QWEN35 || ud->model->arch == LLM_ARCH_CLEF ||
-                        ud->model->arch == LLM_ARCH_QWEN4EXP) {
+                if (ud->model->arch == LLM_ARCH_QWEN35) {
                     return {std::lcm(2*n_embd_q, blck_size_perf), granularity_kv};
                 }
                 if (segments.size() == 3) {

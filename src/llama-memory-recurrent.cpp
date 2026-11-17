@@ -46,7 +46,6 @@ llama_memory_recurrent::llama_memory_recurrent(
     if (want_deferred) {
         switch (model.arch) {
             case LLM_ARCH_QWEN35:
-            case LLM_ARCH_QWEN3NEXT:
                 break;
             default:
                 LLAMA_LOG_WARN("%s: DENSEX_GDN_DEFERRED is not supported for arch %s, keeping the snapshot rollback path\n", __func__, llm_arch_name(model.arch));
