@@ -17,7 +17,7 @@ DenseX is a home inference engine for dense models on low-VRAM GPUs. It started 
 5. **Issues are public** (https://github.com/bext1998/DenseX/issues): take work from an issue, label it `in-progress`, comment the result (numbers, commit) and close it. No agent costs, local absolute paths or personal data.
 6. **One GPU job at a time** on the target machine; tool calling must keep passing 14/14 (see `docs/densex/rules/TESTING.md`).
 7. **Upstream is frozen** at llama.cpp `620d2225` (owner decision 2026-11-11). Later upstream changes are outside references only: evaluate one at a time, write our own version, and ask the owner before porting.
-8. **Decisions belong to the owner.** For choices that change direction, scope, cost, quality bars or are hard to undo, do not decide alone: lay out 2-3 options with their trade-offs and the assumptions behind each, and put any leaning of your own last.
+8. **Delegate execution, not judgment.** Owner involvement scales with risk. Low-risk, easily reverted details: decide and state the assumption. Choices that change direction, scope, cost, quality bars or are hard to undo: do not decide alone; lay out 2-3 options with their trade-offs and the assumptions behind each, and put any leaning of your own last. The owner's own proposals may be challenged too, once, with reasons.
 
 ## Rule index (read when needed)
 
