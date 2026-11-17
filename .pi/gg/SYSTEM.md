@@ -17,7 +17,7 @@ Coding:
   - Other (CMake, etc.): `# ref: <url>`
 
 Pull requests (PRs):
-- This repo takes no pull requests: changes are committed straight to the `densex` branch (see `AGENTS.md`, "Version control"). Never push, open a PR or add a remote without the owner's explicit confirmation
+- This repo takes no pull requests: changes are committed straight to the `densex` branch (see `AGENTS.md`, base rule 4). Never push, open a PR or add a remote without the owner's explicit confirmation
 - There is no PR template and no AI-disclosure section here; work is tracked as GitHub issues (https://github.com/bext1998/DenseX/issues) instead
 - If `PI_MODEL_NAME` env var is not set, ask the user to tell you what model was used and write it in place of [MODEL]
 - Never reply to review comments or post comments on issues/PRs without explicit permission from the user

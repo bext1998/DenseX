@@ -2,7 +2,7 @@
 
 DenseX is an independent fork of llama.cpp, frozen at upstream commit `620d2225` and maintained on the `densex` branch. It does not track or merge upstream, and it is **not** a contribution path to llama.cpp: do not open PRs, issues or patches against `ggml-org/llama.cpp` for work done here.
 
-`AGENTS.md` is the authoritative rule set for this repository (ownership, version control, code style, build and test). This file only describes how work is handled in this repo and never overrides `AGENTS.md`; if the two ever disagree, `AGENTS.md` wins. The upstream contributor guide is kept in git history (`git show 620d222:CONTRIBUTING.md`).
+`AGENTS.md` is the authoritative rule set for this repository: base rules plus an index of the detailed rules in `docs/densex/rules/` (code style, build and test). This file only describes how work is handled in this repo and never overrides `AGENTS.md`; if the two ever disagree, `AGENTS.md` wins. The upstream contributor guide is kept in git history (`git show 620d222:CONTRIBUTING.md`).
 
 ## Where work comes from
 
@@ -12,26 +12,18 @@ DenseX is an independent fork of llama.cpp, frozen at upstream commit `620d2225`
 
 ## Making a change
 
-- Commit directly to `densex`. No push, no PR and no new remote without the owner's approval (`AGENTS.md`, "Version control").
+- Commit directly to `densex`. No push, no PR and no new remote without the owner's approval (`AGENTS.md`, base rule 4).
 - Behavior changes (speed paths, numerics, memory layout) go behind a switch that is off by default, with the old path kept as the reference. Pure refactors and cleanups must keep output identical.
 - Commit messages say what changed, why, the switch and its default, and the measurement the change is based on (result paths, numbers).
 - Keep third-party attribution intact: `LICENSE`, `AUTHORS`, `licenses/` and per-vendor headers are not to be trimmed as "unused".
 
 ## Testing before you commit
 
-Minimum bar for any code change. `AGENTS.md` ("Build and test") has the exact paths - inside a standalone checkout it is `scripts/densex/build.ps1`; in the research workspace it is `../build.ps1` plus `../bench/*.ps1`:
-
-- Build through the build script above. Do not run raw cmake in the engine tree.
-- Run the regression net `regress.ps1`; it must end in `REGRESS_PASS`. Use `-Src <checkout> -Name <build>` to test a worktree.
-- `ggml` / kernel changes: also run `test-backend-ops` (eval and perf) for the affected ops, plus `sanitize.ps1` for CUDA changes.
-- Server / tool-calling changes: `toolcall_check.py` must pass all 14 cases.
-- Long-context changes: check output quality and stability, not only speed.
-- One GPU job at a time: take the lock (`gpu_lock.ps1`) before any GPU work, and never delete the lock file.
-- Never weaken a test, golden value or threshold to make a run pass. If a check cannot be run, say so in the report instead of claiming success.
+Follow `docs/densex/rules/TESTING.md`: build through the build script, `regress.ps1` must end in `REGRESS_PASS`, tool calling 14/14, plus the extra checks for kernel, CUDA and long-context changes. Never weaken a test, golden value or threshold to make a run pass.
 
 ## Code style
 
-Follow `AGENTS.md` ("Code style"): blend in with the surrounding code, short ASCII-only comments that explain *why*, a `DenseX` prefix on DenseX-specific comments, no hard-wrapped comment columns, and reuse existing infrastructure instead of adding parallel subsystems. Naming keeps the usual llama.cpp conventions: `snake_case` functions, longest-common-prefix naming, `kebab-case` file names for C/C++, enum values upper case and prefixed with the enum name.
+Follow `docs/densex/rules/CODE_STYLE.md`.
 
 ## AI usage
 

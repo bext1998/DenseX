@@ -12,7 +12,7 @@ This skill walks a contributor through adding a new model architecture. AI-gener
 - The contributor is 100% responsible for every line, however it was produced. They must be able to explain and defend any part of it to a reviewer. Check in with them as you go (don't silently generate everything and hand over a finished diff) so they actually absorb what was written.
 - Before writing code, make sure the contributor owns the design choices for this architecture (which reference model to follow, how non-standard bits like RoPE variants or MoE routing should be handled) - AI accelerates a design the contributor has already made, it doesn't make the design for them.
 - Track the work in one GitHub issue and comment the result (numbers, commit hash) before closing it; issues are public, so no agent costs, local absolute paths or personal data. There is no PR template and no AI-disclosure section in this repo.
-- Write commit messages yourself, per `AGENTS.md` ("Version control"): what changed, why, the switch and its default, and the measurement it is based on. Copy the commit trailer the task gives you verbatim - in this repo AI co-authorship is expressed with `Co-Authored-By:` (see `git log`).
+- Write commit messages yourself, per `AGENTS.md` (base rule 4): what changed, why, the switch and its default, and the measurement it is based on. Copy the commit trailer the task gives you verbatim - in this repo AI co-authorship is expressed with `Co-Authored-By:` (see `git log`).
 - If the requested change looks large or introduces a new pattern not covered here, pause and tell the user this kind of change needs the design settled in an issue first.
 - Keep the change self-contained. If it would require a lot of unconventional changes outside the new model file(s) (e.g. touching shared graph-building code, the sampler, or core APIs in ways other models don't), STOP and settle the design in an issue first - invasive changes get split up.
 - Do not bundle unrelated work into this change - see Step 4 and Step 5 below for the specifics on multimodal and chat-template/parsing work.
@@ -89,8 +89,8 @@ Reference: `examples/model-conversion/README.md`.
 3. Quantize (including QAT variants if relevant) and re-verify.
 4. Run perplexity evaluation (simple and full).
 5. Sanity-check across `tools/cli`, `tools/completion`, `tools/imatrix`, `tools/quantize`, and `tools/server`.
-6. CPU backend first; other backends can be separate follow-up changes (`AGENTS.md`, "Build and test").
-7. Re-review every changed file against the coding/naming guidelines in `AGENTS.md` ("Code style") and `CONTRIBUTING.md` ("Code style") - this is a separate pass from functional testing and is just as important: no forced line-wrapping, no unicode punctuation, minimal/non-redundant comments, `snake_case` naming (`kebab-case` for file names), matching indentation/brace style, etc.
+6. CPU backend first; other backends can be separate follow-up changes (`docs/densex/rules/TESTING.md`).
+7. Re-review every changed file against the coding/naming guidelines in `docs/densex/rules/CODE_STYLE.md` - this is a separate pass from functional testing and is just as important: no forced line-wrapping, no unicode punctuation, minimal/non-redundant comments, `snake_case` naming (`kebab-case` for file names), matching indentation/brace style, etc.
 
 ## Before committing
 

@@ -12,9 +12,9 @@ This skill reviews changes against the project's conventions and the pitfalls re
 - **Self-review (default):** review the contributor's own local changes (uncommitted work, or a commit under review) as a pre-commit pass. Ask which if it's ambiguous; default to `git diff HEAD` plus `git show <commit>` when a commit is named.
 - **Read-only review of a change/file:** if the user points at a commit or specific files (including code they didn't write), review those and report findings.
 
-In both modes the output is **private review notes for the user to read and act on** - it is never something to post. Posting anything through `gh` (review comments, issue replies) or pushing needs the owner's explicit approval, per `AGENTS.md` ("Version control"). Present findings in the conversation only.
+In both modes the output is **private review notes for the user to read and act on** - it is never something to post. Posting anything through `gh` (review comments, issue replies) or pushing needs the owner's explicit approval, per `AGENTS.md` (base rule 4). Present findings in the conversation only.
 
-Before starting, read `AGENTS.md` and `CONTRIBUTING.md` if not already in context - `AGENTS.md`'s "Code style" and `CONTRIBUTING.md`'s "Code style"/"AI usage" sections are the baseline this review enforces. For a diff that adds a new model architecture, also read `docs/development/HOWTO-add-model.md` and consider the dedicated `add-new-model` skill.
+Before starting, read `AGENTS.md` and `CONTRIBUTING.md` if not already in context - `docs/densex/rules/CODE_STYLE.md` and `CONTRIBUTING.md`'s "AI usage" section are the baseline this review enforces. For a diff that adds a new model architecture, also read `docs/development/HOWTO-add-model.md` and consider the dedicated `add-new-model` skill.
 
 ## Step 0 - Scope the diff and pick the checklists
 
@@ -220,7 +220,7 @@ Adjacent data-shape rule: empty string is not a valid "unset" initial state - us
 
 ## General (always)
 
-Enforce the `AGENTS.md` "Code style" / `CONTRIBUTING.md` "Code style" guidelines on every changed line - this is a distinct pass from checking that the code works, and matters just as much for review speed:
+Enforce the `docs/densex/rules/CODE_STYLE.md` guidelines on every changed line - this is a distinct pass from checking that the code works, and matters just as much for review speed:
 
 - ASCII only in code and comments - no emdash, unicode arrows, `x`, `...` used as unicode; use `-`, `->`, `x`, `...` ASCII equivalents.
 - Comments are concise and explain non-obvious *why*, not *what*. Flag verbose comments, comments that restate the code, comments that reference the current task/PR, and comments hard-wrapped to a fixed column width.
@@ -232,7 +232,7 @@ Enforce the `AGENTS.md` "Code style" / `CONTRIBUTING.md` "Code style" guidelines
 - Keep it simple: a simpler change doing 90% is often preferable to a complex one doing 100%. Flag unnecessary templates/fancy STL; basic `for` loops are fine here.
 - Every added line should be something the contributor can explain and defend to a reviewer without AI help - flag anything that looks copied-in without understanding.
 - Commit trailers follow the task/`AGENTS.md`; in this repo AI co-authorship is written as `Co-Authored-By: <agent> <noreply@densex.local>` (see `git log`). The upstream `Assisted-by:` rule does not apply here - do not flag a `Co-Authored-By:` AI trailer as a finding.
-- Any mentions of Minja must be treated as blocking; see `AGENTS.md` for why.
+- Any mentions of Minja must be treated as blocking; see `docs/densex/rules/CODE_STYLE.md` for why.
 
 ## Reporting
 
