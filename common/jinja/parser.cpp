@@ -192,6 +192,7 @@ private:
             if (is_type<identifier>(filter_node) && is(token::open_paren)) {
                 filter_node = parse_call_expression(std::move(filter_node));
             }
+            expect_filter(filter_node, start_pos);
             expect(token::close_statement, "Expected %}");
 
             statements body;
@@ -443,6 +444,19 @@ private:
         return operand;
     }
 
+    // A filter must be a name ({{ x|upper }}) or a call ({{ x|replace("a", "b") }}).
+    // filter_expression / filter_statement only assert this in their constructors,
+    // and assert is a no-op under NDEBUG while it aborts otherwise, so reject a bad
+    // operand here instead: Debug and Release then behave the same and the error
+    // carries a source position instead of killing the process (issue #79).
+    void expect_filter(const statement_ptr & filter, size_t pos) {
+        if (!is_type<identifier>(filter) && !is_type<call_expression>(filter)) {
+            throw parser_exception(
+                "Parser Error: filter must be a name or a call (Got " + filter->type() + ")",
+                source, pos < tokens.size() ? tokens[pos].pos : source.size());
+        }
+    }
+
     statement_ptr parse_filter_expression() {
         // Filters/tests bind outside unary so -n|abs is (-n)|abs, not -(n|abs).
         auto operand = parse_unary_expression();
@@ -451,6 +465,7 @@ private:
             ++current; // consume pipe
             auto filter = parse_primary_expression();
             if (is(token::open_paren)) filter = parse_call_expression(std::move(filter));
+            expect_filter(filter, start_pos);
             operand = mk_stmt<filter_expression>(start_pos, std::move(operand), std::move(filter));
         }
         return operand;

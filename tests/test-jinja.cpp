@@ -37,6 +37,7 @@ static void test_stats(testing & t);
 static void test_caps(testing & t);
 static void test_string_parts(testing & t);
 static void test_fuzzing(testing & t);
+static void test_invalid_filters(testing & t);
 
 static bool g_python_mode = false;
 
@@ -64,6 +65,7 @@ int main(int argc, char *argv[]) {
     t.test("expressions", test_expressions);
     t.test("set statement", test_set_statement);
     t.test("filters", test_filters);
+    t.test("invalid filters", test_invalid_filters);
     t.test("literals", test_literals);
     t.test("comments", test_comments);
     t.test("macros", test_macros);
@@ -971,6 +973,51 @@ static void test_filters(testing & t) {
         {{"x", nullptr}},
         "None"
     );
+}
+
+// A filter must be a name or a call. filter_expression / filter_statement only
+// assert this in their constructors (a no-op under NDEBUG, abort() otherwise), so
+// the parser now rejects a bad operand itself (issue #79).
+static void test_invalid_filters(testing & t) {
+    auto parse_error = [](const std::string & tmpl) -> std::string {
+        try {
+            jinja::lexer lexer;
+            auto lexer_res = lexer.tokenize(tmpl);
+            jinja::parse_from_tokens(lexer_res);
+            return "";
+        } catch (const jinja::parser_exception & e) {
+            return e.what();
+        } catch (const std::exception & e) {
+            return std::string("unexpected exception: ") + e.what();
+        }
+    };
+
+    const std::vector<std::string> rejected = {
+        "{{9|9|{",            // literal in filter position (upstream PoC shape)
+        "{{ 'a'|9 }}",        // literal right of the pipe
+        "{{ 'a'|[1, 2] }}",   // array right of the pipe
+        "{% filter 9 %}x{% endfilter %}",
+    };
+    for (const auto & tmpl : rejected) {
+        const auto msg = parse_error(tmpl);
+        if (!t.assert_true(tmpl + " is rejected at parse time with a filter error",
+                           msg.find("filter must be a name or a call") != std::string::npos)) {
+            t.log("Got: " + (msg.empty() ? std::string("<parsed ok>") : msg));
+        }
+    }
+
+    const std::vector<std::string> accepted = {
+        "{{ 'a'|upper }}",
+        "{{ 'a'|replace('a', 'b') }}",
+        "{{ items|sort(attribute='name') }}",
+        "{% filter upper %}x{% endfilter %}",
+    };
+    for (const auto & tmpl : accepted) {
+        const auto msg = parse_error(tmpl);
+        if (!t.assert_true(tmpl + " still parses", msg.empty())) {
+            t.log("Got: " + msg);
+        }
+    }
 }
 
 static void test_literals(testing & t) {
