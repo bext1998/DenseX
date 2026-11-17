@@ -221,9 +221,13 @@ class MiniCPMV4_7TextModel(Qwen3_5TextModel):
             hparams = ModelBase.load_hparams(dir_model, is_mistral_format=False)
         text_config = hparams.get("text_config", {})
         if text_config.get("model_type") == "qwen3_5_moe_text":
-            self.model_arch = gguf.MODEL_ARCH.QWEN35MOE
-        else:
-            self.model_arch = gguf.MODEL_ARCH.QWEN35
+            # DenseX dropped MoE support (issue #86 phase 4): the engine refuses to load
+            # 'qwen35moe', so stop here instead of writing a GGUF nobody can open.
+            raise ValueError(
+                "DenseX does not support this architecture: the MiniCPM MoE text variant "
+                "converts to 'qwen35moe', which DenseX no longer loads (issue #86); "
+                "convert the dense text variant instead")
+        self.model_arch = gguf.MODEL_ARCH.QWEN35
         super().__init__(dir_model, ftype, fname_out, hparams=hparams, **kwargs)
 
     @classmethod

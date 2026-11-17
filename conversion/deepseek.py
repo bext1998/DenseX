@@ -532,6 +532,15 @@ class DeepseekV4Model(TextModel):
     _dsv4_nextn_layers: int = 0
 
     def __init__(self, *args, **kwargs):
+        if self.model_arch != gguf.MODEL_ARCH.DFLASH:
+            # DenseX dropped DeepSeek-V4 as a loadable architecture (issue #86 phase 4):
+            # refuse here instead of writing a GGUF the engine rejects at load time.
+            # DeepseekV4DSparkModel subclasses this class with model_arch = DFLASH and
+            # keeps converting, so only the deepseek4 target is blocked.
+            raise ValueError(
+                "DenseX does not support this architecture: DeepSeek-V4 text models convert "
+                "to 'deepseek4', which DenseX no longer loads (issue #86); "
+                "use --dspark for the DFlash2 draft model instead")
         type(self)._skipped_mtp_tensors = 0
         super().__init__(*args, **kwargs)
 
