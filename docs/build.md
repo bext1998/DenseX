@@ -30,6 +30,7 @@ cmake --build build --config Release
 
 **Notes**:
 
+- DenseX does not build the demo targets by default: `examples/` and `pocs/` are gated on `LLAMA_BUILD_EXAMPLES`, which defaults to `OFF` here (upstream defaults it to `ON`). Add `-DLLAMA_BUILD_EXAMPLES=ON` to build them.
 - For faster compilation, add the `-j` argument to run multiple jobs in parallel, or use a generator that does this automatically such as Ninja. For example, `cmake --build build --config Release -j 8` will run 8 jobs in parallel.
 - For faster repeated compilation, install [ccache](https://ccache.dev/)
 - For debug builds, there are two cases:

@@ -61,6 +61,8 @@ pwsh -File scripts/densex/build.ps1 -Target llama-server        # output build/s
 pwsh -File scripts/densex/build.ps1 -Target test-backend-ops -Tests
 ```
 
+Demo targets are off unless asked for: `LLAMA_BUILD_EXAMPLES` (which gates `examples/` and `pocs/`) defaults to `OFF` in this fork, so a bare `cmake -B build` does not build them; add `-DLLAMA_BUILD_EXAMPLES=ON`. The wrapper above and CI already passed `-DLLAMA_BUILD_EXAMPLES=OFF` explicitly, so their builds are unchanged.
+
 `-Arch 89` or `-Arch 120` builds for other GPUs (compile-tested only). Each build appends a line to `build/<name>/BUILD_INFO.txt` with the commit, a hash of uncommitted changes and the executable hash.
 
 ## Example: 120K on a 12 GB GPU
