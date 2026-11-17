@@ -342,6 +342,13 @@ DenseX 是獨立的 llama.cpp fork：
 - commit trailer 遵循交辦和 `AGENTS.md`。
   - 本 repo 的 AI 共同作者寫成 `Co-Authored-By: <agent> <noreply@densex.local>`（見 `git log`）。
   - 上游的 `Assisted-by:` 規則不適用於這裡：不要把 `Co-Authored-By:` 的 AI trailer 當成發現。
+- 程式結構（`docs/densex/rules/CODE_STYLE.md`「程式結構」）：
+  - 改變數值結果的改動是預設開啟的嗎？是的話，屬於阻斷性問題。
+  - 新功能有自己的檔案和開關嗎？檔頭有說明嗎？
+  - 是否直接讀寫其他模組的內部狀態或全域變數？
+  - 是否吞掉錯誤、默默退回預設值，或有沒印警告的退路？會改變數值的默默退路屬於阻斷性問題。
+  - 新的錯誤訊息開頭有標模組名稱嗎？
+  - 熱路徑例外有附實測收益與說明註解嗎？
 - 任何提到 Minja 的地方都要當成阻斷性問題，原因見 `docs/densex/rules/CODE_STYLE.md`。
 
 ## 回報

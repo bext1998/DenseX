@@ -36,12 +36,16 @@ DenseX 是給低 VRAM 顯示卡使用的家用稠密模型推論引擎。它從 
    - 程式碼註解：新註解用正體中文，`ggml/`（含 CUDA）例外，維持英文 ASCII。細則與理由見 `docs/densex/rules/CODE_STYLE.md`。
    - commit 訊息與 issue 是公開的，沿用英文。
    - 引用程式識別名稱、檔名、指令與英文文件的章節標題時，保留原文。
+10. **程式結構**（擁有者 2026-11-18 決定）：
+    - 精度和穩定度是門檻，性能是門檻內的目標。
+    - 程式碼要讓人和 agent 看得懂；以功能為單位解耦；錯誤一定要看得到，不准默默失敗。
+    - 細則見 `docs/densex/rules/CODE_STYLE.md`「程式結構」。
 
 ## 規則目錄（需要時再讀）
 
 | 檔案 | 什麼時候讀 |
 |---|---|
-| `docs/densex/rules/CODE_STYLE.md` | 寫程式或審查程式：風格、註解、命名 |
+| `docs/densex/rules/CODE_STYLE.md` | 寫程式或審查程式：程式結構、錯誤處理、註解、命名 |
 | `docs/densex/rules/TESTING.md` | 建置、測試、量測，以及任何 commit 之前 |
 | `CONTRIBUTING.md` | 工作在本 repo 的流程、授權與致謝（對外文件，英文） |
 | `README.md` | DenseX 是什麼、有哪些開關、怎麼建置（對外文件） |
