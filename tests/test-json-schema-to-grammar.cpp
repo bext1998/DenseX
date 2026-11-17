@@ -1598,6 +1598,31 @@ int main() {
         }));
     }
 
+    // Malformed patterns must fail cleanly instead of crashing: an empty quantifier
+    // raises a conversion error, and nesting past MAX_PATTERN_DEPTH falls back to
+    // accepting any string. Both paths are already guarded in
+    // common/json-schema-to-grammar.cpp (upstream #26939); this pins them down.
+    {
+        fprintf(stderr, "- pattern with nothing to repeat\n");
+        auto schema = common_json::parse(R"""({"type":"string","pattern":"^*$"})""");
+        bool rejected = false;
+        try {
+            json_schema_to_grammar(schema, true);
+        } catch (const std::invalid_argument &) {
+            rejected = true;
+        }
+        assert(rejected);
+    }
+
+    {
+        fprintf(stderr, "- deeply nested pattern\n");
+        common_json schema = common_json::object();
+        schema["type"]    = "string";
+        schema["pattern"] = "^" + std::string(20000, '(') + std::string(20000, ')') + "$";
+        const std::string grammar = json_schema_to_grammar(schema, true);
+        assert(!grammar.empty());
+    }
+
     test_all("Check the expectations parse", [](const TestCase & tc) {
         if (tc.expected_status == SUCCESS) {
             tc.verify_expectation_parseable();
