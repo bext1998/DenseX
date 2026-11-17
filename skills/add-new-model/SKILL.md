@@ -1,132 +1,122 @@
 ---
 name: add-new-model
-description: 引導在 DenseX（獨立的 llama.cpp fork）新增模型架構的流程。使用者要新增或移植模型架構時使用。
+description: 在 DenseX 接入新的 Qwen 3.8 系列模型檔、fine-tune 或推測解碼用的 draft 模型，並驗證它和既有路徑一樣準、一樣穩。使用者要支援新的模型檔、新的權重來源或量化版本、新的 draft 模型，或問「能不能跑某個模型」時使用。
 ---
 
-# 在 DenseX 新增模型架構
+# 在 DenseX 接入新模型
 
-DenseX 是獨立的 llama.cpp fork：
-- 不追蹤也不合併上游，也不收 pull request。
-- 工作以 GitHub issue（https://github.com/bext1998/DenseX/issues）加上 `densex` 分支的 commit 完成，見 `AGENTS.md`（具權威的規則）與 `CONTRIBUTING.md`。
-- 本 skill 沿用上游文字時提到的「PR」，請讀成「這次改動」，也就是它的 issue 加上 commit。
+DenseX 是給低 VRAM 顯示卡用的家用稠密模型推論引擎，只支援兩種架構：
+- `qwen35`：Qwen 3.8 系列的主模型，包括 27B 的各家權重與量化版本（例如 ISTA GSQ-RCO、Unsloth UD 各檔位）。
+- `dflash`：`--spec-type draft-dflash` 用的 draft 模型。
 
-本 skill 帶貢獻者一步步新增模型架構。本專案允許 AI 產生的程式碼，所以下面每一步你都可以寫出完整實作，而不只是指出可參考的模式；但全程都要遵守 `AGENTS.md`：
+其他架構在 issue #10、#86 都已經刪掉：載入時 factory 會直接拒絕（`src/llama-model.cpp` 的 `llama_model_mapping`），部分轉檔路徑也會在轉檔時就擋下（例如 MiniCPM 的 MoE 變體、DeepSeek-V4 文字模型）。其他已刪架構的轉檔類別還留著，轉得出 GGUF，但引擎載入不了。所以「接入新模型」在 DenseX 通常不是「新增一種架構」，而是「讓一個新的模型檔在既有架構上正確、穩定地跑起來」。
 
-- **貢獻者對每一行負完全責任**，不論是怎麼寫出來的。他們必須能向審查者解釋並辯護任何一段。邊做邊和他們確認，不要默默產生全部再交出完整的 diff，這樣他們才真的吸收了寫出來的東西。
-- **設計由貢獻者決定**：寫程式之前，確認這個架構的設計選擇由貢獻者決定，例如要參考哪個模型、RoPE 變體或 MoE 路由這類非標準部分要怎麼處理。AI 是加速貢獻者已經做好的設計，不是替他們做設計。
-- **用一個 GitHub issue 追蹤**：關閉前留言結果（數字、commit hash）。
-  - issue 是公開的，不寫 agent 花費、本機絕對路徑或個人資料。
-  - 本 repo 沒有 PR 範本，也沒有 AI 揭露段落。
-- **commit 訊息自己寫**，依 `AGENTS.md` 基本規則 4：
-  - 內容寫改了什麼、為什麼、開關與預設值，以及根據的量測。
-  - 交辦給的 commit trailer 要照抄。本 repo 用 `Co-Authored-By:` 表示 AI 共同作者（見 `git log`）。
-- **改動看起來很大**，或引入了這裡沒涵蓋的新模式：先停下來，告訴使用者這類改動要先在 issue 裡把設計定案。
-- **改動要自成一體。**
-  - 如果需要在新模型檔以外做很多非慣例的修改，例如以其他模型不需要的方式改動共用的建圖程式、sampler 或核心 API：停下來，先在 issue 定案設計。
-  - 侵入性的改動要拆開。
-- **不要把無關的工作綁進這次改動**：多模態、chat template／解析的細節見下面第 4、5 步。
-- **絕不用自訂的 sin/cos 實作繞過 RoPE。** 如果現有的 `ggml_rope_ext`（見第 2 步的 RoPE 提示）真的表達不了這個模型的需求，先開 issue 討論，不要自己寫 RoPE 實作。
+開始前，如果 `AGENTS.md`、`docs/densex/rules/CODE_STYLE.md`、`docs/densex/rules/TESTING.md` 還不在上下文裡，先讀完。
 
-開始前，如果 `AGENTS.md`、`CONTRIBUTING.md` 和 `docs/development/HOWTO-add-model.md` 還不在上下文裡，先讀完。另外跑 `git log --oneline -- src/models`，讀最近幾個新增模型的 commit 和 diff。這比文件更能反映目前的慣例，因為文件可能落後。
+## 全程要遵守的事
 
-## 第 0 步：範圍與重複檢查
+- **精度和穩定度是門檻**（`AGENTS.md` 基本規則 10）：新模型要和參考實作或參考路徑比對過，才算支援。「能載入、能回答」不等於正確。
+- **行為改變放在預設關閉的開關後面**（基本規則 2）：為了新模型改到共用路徑時，既有模型的輸出必須逐字不變。
+- **設計由使用者（擁有者）決定**：要支援哪個模型、要不要為它改共用程式，是擁有者的決定。AI 負責查清楚、提出做法和實作，不替擁有者拍板。
+- **用一個 GitHub issue 追蹤**：關閉前留言結果（數字、commit hash）；issue 是公開的，不寫 agent 花費、本機絕對路徑或個人資料。
+- **模型檔和原始結果是唯讀的**：不改、不刪、不覆寫研究工作區裡的模型檔；新轉出的 GGUF 放在新的檔名。
+- **上游凍結**（基本規則 7）：上游 llama.cpp 之後才支援的模型，只能當參考；要移植上游程式碼前先問擁有者。
 
-問貢獻者：
-1. 哪個模型（HF repo id 或名稱）？只有文字，還是有多模態（視覺／音訊）編碼器？
-2. 本機是否已經有 HF 的 `config.json` 和權重？
-3. 是否查過有沒有這個模型的既有 issue？建議用 `gh search issues "<model name>" --repo bext1998/DenseX`。已有 issue 涵蓋時，到那裡留言、協作，不要另開重複的。
-4. 這個模型最接近哪個既有支援的架構？例如「類 Llama、有滑動視窗」「類 DBRX 的 MoE」「BERT 式編碼器」。
+## 第 0 步：判斷是哪一種情況
 
-如果貢獻者不知道最接近的參考架構：
-- 你可以在 `conversion/*.py` 和 `src/models/*.cpp` 裡找設定形狀相近的架構，例如層數、head 數、MoE expert 數、norm 位置，建議 1～2 個候選。
-- 但要讓貢獻者確認，不要自己挑。這個選擇是他們要負責的設計決定。
+先問清楚（使用者沒講的，自己去查 `config.json`、GGUF metadata 或模型卡）：
+1. 哪個模型？HF repo id 或檔名、來源（HF 為主，Pirate Face 備用）。
+2. 是現成的 GGUF，還是要從 HF 權重自己轉？
+3. 有沒有視覺編碼器（mmproj）？
+4. 它是主模型，還是 draft 模型（DFlash、MTP 頭）？
 
-貢獻者回答完這些問題、並指定參考架構之前，不要進行第 1 步。
+然後對照下表，決定走哪條路：
 
-## 第 1 步：把模型轉成 GGUF
+| 情況 | 怎麼判斷 | 走哪條路 |
+|---|---|---|
+| Qwen 3.8 系列的新權重來源、新量化檔位，架構與 tensor 都和現有的一樣 | GGUF 的 `general.architecture` 是 `qwen35`，tensor 名稱與形狀和已支援的模型一致 | 路線 A |
+| 同架構，但 hparam、tensor、chat template 或 tokenizer 有差異 | 載入失敗、缺 tensor、多出 tensor、template 不同，或 fine-tune 改了特殊 token | 路線 B |
+| 新的 draft 模型 | 要當 `--draft-model` 用，或是 MTP 頭 | 路線 C |
+| 不是 `qwen35`／`dflash`，例如 MoE、其他廠商、Qwen 的其他世代 | 架構名稱不在上面兩個裡 | 路線 D：停下來問擁有者 |
 
-實際要改的地方照 HOWTO-add-model.md 第 1 節做，例如轉檔類別的註冊、`constants.py`、`tensor_mapping.py`。不要在這裡重新推導，從文件讀。
+不確定屬於哪一條時，先實際載入一次看錯誤訊息，再判斷；不要先寫程式。
 
-本 skill 額外要求：
-- 每個要改的地方，先給貢獻者看他們在第 0 步指定的參考架構中對應的程式碼，再寫新版本。
-- 確認他們理解自己的模型有哪裡不同，例如非標準的 tensor 形狀、額外的 hparam；不要只是默默照抄模式。
+## 路線 A：同架構的新模型檔（通常不改程式）
 
-## 第 2 步：在 llama.cpp 定義架構
+1. 檢查 GGUF metadata：用 `gguf-py` 的 dump 工具看 `general.architecture`、hparam、tensor 清單、內嵌的 chat template、tokenizer 類型。和一個已支援的 Qwen 3.8 27B 檔逐項比對，差異列出來。
+2. 載入並跑基本對話：temperature 0、思考關閉，確認回答正常、會停在 EOS。
+3. 跑精度與穩定度的驗證（見下面「驗證清單」）。
+4. 不需要改程式時，不要為了「支援」而加程式碼。結果寫進 issue，必要時更新對外的支援模型說明。
 
-實際要改的地方照 HOWTO-add-model.md 第 2 節做，例如 `llm_arch` enum、`LLM_ARCH_NAMES`、hparam 載入、RoPE 類型的 case；包括它的「Tips and tricks」一節裡關於 `ggml_rope_ext` 的陷阱。
+## 路線 B：同架構，但有差異
 
-本 skill 額外要求：絕不用自訂的 sin/cos 實作繞過 RoPE，見上面的 RoPE 規則。
+先找出差異到底在哪一層，再決定改哪裡：
 
-## 第 3 步：建立 GGML 計算圖
+| 差異 | 改哪裡 | 原則 |
+|---|---|---|
+| 轉檔時 tensor 名稱或形狀不同 | `conversion/qwen.py`（`model_arch = gguf.MODEL_ARCH.QWEN35` 的類別）、`gguf-py` 的 tensor mapping | 常數性的 tensor 修改、置換、切塊在轉檔時做，不要放進計算圖 |
+| 載入時缺少或多出 hparam／tensor | `src/models/qwen35.cpp` 的載入段、`src/llama-model.cpp` | 選填的用選填方式讀；關鍵的缺少時直接報錯 |
+| chat template | 轉檔時寫進 GGUF | 不要在 C++ 裡寫死預設 template |
+| 工具調用或輸出解析 | 先用既有的 autoparser 試（`test-chat-auto-parser <jinja>`） | 既有的能處理就不寫專用 parser |
+| tokenizer、特殊 token | 轉檔程式的 tokenizer 段 | 重用既有的 pre-tokenizer 要說明理由並測試 |
 
-實際要改的地方照 HOWTO-add-model.md 第 3 節做，例如 `src/models/<name>.cpp` 的 struct、`llama_model_mapping` 的註冊。
+每一處要改的地方：
+- 先給使用者看既有的對應程式碼，說明這個模型哪裡不同，再寫新版本；
+- 改到 `qwen35.cpp` 或共用路徑時，既有的 Qwen 3.8 27B 輸出必須逐字不變（regress 的 golden 比對）；
+- 新程式碼遵守 `CODE_STYLE.md`：錯誤訊息開頭標模組名稱、不默默退回預設值、新註解用中文。
 
-本 skill 額外要求：寫 `src/models/<name>.cpp` 之前，至少讀 `src/models/` 底下 10 個其他檔案。要混著挑，不能只看參考架構那一個；用來確認你要寫的 struct 配置、命名和風格符合目前的慣例。模式會隨時間漂移，HOWTO 文件可能落後。
+## 路線 C：draft 模型（DFlash、MTP）
 
-## 第 4 步（選做）：多模態編碼器
+- DFlash 的 draft 模型走 `dflash` 架構：轉檔類別是 `conversion/deepseek.py` 的 DSpark 路徑（`model_arch = DFLASH`），計算圖在 `src/models/dflash.cpp`。
+- MTP 頭屬於 `qwen35` 主模型的一部分，相關邏輯在 `src/models/qwen35.cpp`。
+- draft 模型的驗證重點和主模型不同：
+  - temperature 0 時，開不開推測解碼，輸出必須逐字相同（推測解碼只能改變速度，不能改變結果）；
+  - 量接受率與實際速度，和現有的 draft 模型比較；
+  - DFlash 跑 `regress.ps1 -Full -Long`，MTP 跑 `regress.ps1 -Draft mtp -Full -Long`。
+- 不要在主模型的改動裡附帶未驗證的 draft 骨架；draft 支援另外做成一次改動。
 
-只有貢獻者在第 0 步提到有視覺／音訊編碼器時才做。實際要改的地方照 HOWTO-add-model.md 第 4 節和 `docs/multimodal.md` 做，例如 `MmprojModel` 子類別、`clip.cpp`、`mtmd.cpp`，以及 `tools/mtmd/models` 裡的編碼器計算圖。
+## 路線 D：新架構（超出範圍）
 
-本 skill 額外要求，請仔細讀：**多模態編碼器能不能和文字模型的基本支援放在同一次改動，取決於改動有多符合慣例。**
-- **可以放在一起**：編碼器支援符合慣例，也就是不需要新的基礎設施或邏輯，只是一個新的 cgraph，重用既有的前處理／projector 機制。例如 siglip、pixtral、qwen 只加一個新 projector。
-- **要拆開**：只要超出這個範圍，例如新的前處理器、非標準的 projector 邏輯，或改動共用的 `libmtmd` 基礎設施／邏輯：
-  - 停下來，告訴貢獻者這不符合慣例；
-  - 先完成文字模型，編碼器另外做成後續的獨立改動。
-- 不要讓這個決定默默帶過：寫任何 `clip.cpp`／`mtmd.cpp` 程式碼之前，明確向貢獻者說明。
+DenseX 只支援稠密的 Qwen 3.8 系列，這是擁有者定的方向。遇到其他架構時：
+- 不要動手加架構，也不要把已刪除的架構從 git 歷史救回來。
+- 停下來，依 `AGENTS.md` 基本規則 8 給擁有者 2～3 個做法，例如「不支援」「改用已支援的同級模型」「開 issue 評估新增架構的成本」，附上利弊與前提，傾向放最後。
+- 擁有者決定要支援時，另外開 issue 討論設計，再參考 `docs/development/HOWTO-add-model.md`（上游的新增架構流程，部分步驟在 DenseX 已不適用）。
 
-## 第 5 步（選做）：chat template／解析支援
+## 視覺編碼器（mmproj）
 
-只有模型需要新的內建 chat template（`src/llama-chat.cpp`），或新的輸出解析器時才做；解析器見 `docs/development/parsing.md` 和 `docs/autoparser.md`。
+DenseX 保留看圖功能（`tools/mtmd/`）。Qwen 3.8 系列附 mmproj 時：
+- mmproj 用 `--mmproj` 載入；誤用 `-m` 載入時，引擎會提示改用 `--mmproj`。
+- 用固定圖片、固定問題、temperature 0 做端到端測試，記錄圖片 SHA256，和參考路徑比對回答。可以用 repo 裡的 `tools/mtmd/test-1.jpeg`。
+- 需要新的前處理器、新的 projector 邏輯或改動 `libmtmd` 共用部分時，先完成文字模型，編碼器另外做成一次改動。
 
-如果需要的超出使用者自備的 Jinja template 已經能涵蓋的範圍，就當成後續的獨立改動，不要放進基本的模型支援改動。要明確向貢獻者說明，不要默默綁進去。
+## 常見陷阱
 
-## 常見陷阱（來自過去的審查）
-
-這些在過去新增模型的審查意見中很常出現，值得主動檢查，不要等審查者抓：
-
-- 同一個 hparam／設定假設，不要在 Python 轉檔腳本和 C++ 載入路徑都驗證一次。選一層負責檢查，重複只會增加維護面。
-- 某些設定裡確實可能不存在的選填 hparam，例如 shared-expert 數，要用明確的選填／fallback 存取方式讀取，不能假設一定有。
-- 真正關鍵的 hparam，也就是少了它模型會輸出錯誤或當掉的，例如 `sliding_window_pattern`、norm-eps：缺少時必須直接報錯，不能默默退回預設值。
-- 不要把預設 chat template 寫死在 C++ 執行檔裡，要在轉檔時寫進 GGUF。同一個 `llm_arch` 可能被多個 template 不同的 fine-tune 重用，寫死的 C++ 預設會對它們默默失效。
-- 寫專用的工具調用／輸出解析器之前，先確認既有的 autoparser 是否已經能處理這個 template。`test-chat-auto-parser <jinja>` 會顯示它偵測到什麼。
-- 轉檔時把自訂的 EOS／結束標籤 token 標成 `eot`，不一定足夠。
-  - 在長篇或 agent 式生成中，模型可能把結束序列當成一般文字輸出，而不是那個 token；結果生成不會因 EOG 停止，原始文字會漏過解析器。
-  - 要驗證這種情況，不能只驗證 token 路徑。
-- 為了方便而重用或別名既有的 pre-tokenizer 時，要明確說明理由並測試。默默重用很容易造成細微的 tokenizer 錯誤。
-- 注意在 layer 迴圈裡建立每層的 view／index tensor，造成過多的計算圖分割。不隨層變化的 tensor 要移到迴圈外。遇到 `GGML_SCHED_MAX_SPLIT_INPUTS` 時特別相關。
-- 傳給 flash attention 的自訂 KQ mask，dtype 必須符合 FA 的要求：FA 開啟時，傳給 `build_attn_mha` 之前先轉成 F16。
-- 把自訂 KV cache 大小補齊到對齊值時（例如 `GGML_PAD(..., 256)`），要在其他大小調整全部完成後才補齊，不能在之前。否則後面的邏輯可能又讓它失去對齊。
-- 非標準的 cache／SWA（滑動視窗注意力）語意，要覆寫專用的 hook，例如 `llama_model_n_swa()`，不要改 hparam 來假裝這個行為。hparam 可能在別處被用在無關的用途。
-- 基本模型改動不要附帶未完成或未驗證的推測解碼（例如 MTP）骨架。如果還沒確認它能用，就拿掉，另外做成後續改動。
-- 轉檔程式應該呼叫基底類別既有的 hparam 邏輯，例如 `super().set_gguf_parameters()`，而不是重新推導。大段重複 `TextModel`／`MmprojModel` 已有功能的程式碼會被標成多餘。
-- 常數性的 tensor 修改（例如 `norm(1 + weight)`）、置換和切塊，要在轉檔時做，不要放在計算圖裡。
-  - 見 HOWTO-add-model.md 的「Prefer conversion-time tensor modifications」提示：Gemma 3 把 `1 +` 折進權重，Qwen3-Next 在 `modify_tensors` 裡做置換。
-  - 在計算圖裡於執行期做這些事，很可能被認為過度複雜而被拒絕。
-  - 真的沒辦法在轉檔時做，先開討論說明原因，不要直接在計算圖裡實作。
-  - 例外：單純乘上常數 scale（`weight * scale`），通常在推論時套用比較好，不要在轉檔時折進權重。概念上這個 scale 作用在 activation 而不是權重；折進去可能損害數值穩定性，也會改變權重的數值範圍，讓量化變差。
+- 同一個 hparam 不要在 Python 轉檔和 C++ 載入兩邊都驗證；選一層負責。
+- 關鍵 hparam（少了會輸出錯誤或當掉的，例如 norm-eps、layer 配置）缺少時直接報錯，不默默用預設值。
+- 轉檔時把自訂的結束 token 標成 `eot` 不一定夠：長篇或 agent 式生成時，模型可能把結束序列當成一般文字輸出。要實測長生成會不會正常停止。
+- 不要在 layer 迴圈裡建立不隨層變化的 view／index tensor，會造成過多的計算圖分割。
+- 傳給 flash attention 的自訂 KQ mask，FA 開啟時要先轉成 F16。
+- 不用自訂的 sin/cos 繞過 RoPE；`ggml_rope_ext` 表達不了時先開 issue。
+- 單純乘上常數 scale（`weight * scale`）通常在推論時套用，不要折進權重：會改變權重的數值範圍，讓量化變差。
+- 量化檔位不同，精度也不同：比較時用同一個檔位，或明確寫出檔位差異。
 
 ## 驗證清單
 
-參考：`examples/model-conversion/README.md`。
+依改動範圍執行；沒跑的照實寫，不要宣稱通過。
 
-1. 轉成 GGUF，然後檢查並執行原始與轉換後的 tensor。
-2. 驗證 logits（原始對轉換後）。
-   - 如果這個模型是已支援系列的新版本，先確認「前一版」仍通過 logits 驗證。數值差異可能早就存在，不是這次的改動造成的。
-   - 完整 logits 驗證的工具在 `examples/model-conversion`。
-3. 量化（相關時包括 QAT 變體），再驗證一次。
-4. 跑 perplexity 評估（簡易版與完整版）。
-5. 在 `tools/cli`、`tools/completion`、`tools/imatrix`、`tools/quantize` 和 `tools/server` 各做一次基本檢查。
-6. 先做 CPU backend；其他 backend 可以是後續的獨立改動（`docs/densex/rules/TESTING.md`）。
-7. 對照 `docs/densex/rules/CODE_STYLE.md` 的程式與命名規範，重新檢查每個改到的檔案。
-   - 這是和功能測試分開的一輪，同樣重要。
-   - 檢查項目包括：不強制換行、程式碼不用 unicode 標點、註解語言符合規定（`ggml/` 用英文 ASCII，其他用中文）、註解精簡不重複、`snake_case` 命名（檔名用 `kebab-case`）、縮排與大括號風格一致等。
+1. **轉檔正確**（有自己轉檔時）：用 `examples/model-conversion` 的工具比對原始 HF 模型與轉出的 GGUF 的 logits。
+2. **輸出正確**：temperature 0、固定 seed，和參考實作或參考路徑比對輸出；改到共用路徑時，用 `bench/ab.py` 對改動前的 build 比對，`exact_match` 必須全部是 true。
+3. **分佈接近**：量化檔跑 KLD 或 perplexity，和同模型的參考檔比較。
+4. **長上下文**：至少跑一次 4K 和 120K，檢查輸出品質與穩定性，不只看速度。
+5. **工具調用**：`toolcall_check.py` 14/14（regress 第 6 層）。
+6. **回歸**：`regress.ps1` 結尾是 `REGRESS_PASS`；改到推測解碼時，DFlash 與 MTP 都跑 `-Full -Long`。不准為了讓測試通過而改 golden 或放寬門檻。
+7. **效能與記憶體**：用 `bench/ab.py` 量 TTFT、prefill、生成速度、VRAM、Shared VRAM，交錯至少 3 輪，報中位數與範圍。目標機器是 12 GB VRAM，要寫出能跑的最大上下文。
+8. **程式風格**：對照 `CODE_STYLE.md` 重新檢查每個改到的檔案，這是和功能測試分開的一輪。
 
 ## commit 之前
 
-- 先對 diff 跑 `code-review` skill。它能抓到審查者最常指出的慣例與範圍問題，值得在 commit 前先在本機做。
-- 跑這次改動需要的檢查（`CONTRIBUTING.md` 的「Testing before you commit」）：
-  - 用建置腳本建置：`scripts/densex/build.ps1`，研究工作區裡是 `../build.ps1`；
-  - 再跑 `regress.ps1`，結尾必須是 `REGRESS_PASS`。
-- 確認貢獻者能向審查者解釋每一行改動，並準備好被問到任何一部分。不論有多少程式碼是 AI 產生的，這都是必要條件。
-- 確認他們完整、仔細地看過整份 diff，而不只是掃過。
-- 關閉 issue 前留言結果（數字、commit hash）；issue 裡不寫花費、本機絕對路徑和個人資料。
+- 對 diff 跑 `code-review` skill。
+- 依 `TESTING.md` 用建置腳本建置，並跑完上面適用的驗證。
+- 一個 commit 只做一件事；commit 訊息寫改了什麼、為什麼、開關與預設值，以及根據的量測（基本規則 4）。
+- 確認使用者能解釋每一行改動，也完整看過 diff。
+- 關閉 issue 前留言結果（數字、commit hash）。
