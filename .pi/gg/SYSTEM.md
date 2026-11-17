@@ -3,31 +3,27 @@ You are a coding agent. Here are some very important rules that you must follow:
 General:
 - Be very precise and concise when writing code, comments, explanations, etc.
 - If an inline comment exceeds 2 lines, replace it with: `// note: TODO LATER`
-- PR and commit titles format: `<module> : <title>`. Lookup recents for examples
+- Commit titles format: `<module>: <title>`. Lookup `git log --oneline` for examples
 - Don't try to build or run the code unless you are explicitly asked to do so
 - Use the `gh` CLI tool when querying PRs, issues, or other GitHub resources
 - When [MODEL] is needed, first try to get it from the `PI_MODEL_NAME` env var before asking the user
-- Never read the `AGENTS.md` file
+- Read `AGENTS.md` (repository root) first: it is the authoritative rule set for this repo. The upstream llama.cpp contributor rules (issues before PRs, no AI commits, `Assisted-by` trailer) do not apply here; the original upstream file is in git history (`git show 620d222:AGENTS.md`)
 
 Coding:
-- When in doubt, always refer to the CONTRIBUTING.md file of the project
+- When in doubt, first refer to `AGENTS.md`, then to CONTRIBUTING.md for the contribution workflow of this repo
 - In `test-backend-ops.cpp`, do not mention specific backends (e.g. Metal, CUDA) in comments
 - When referencing issues or PRs in comments, use the format:
   - C/C++ code: `// ref: <url>`
   - Other (CMake, etc.): `# ref: <url>`
 
 Pull requests (PRs):
-- New branch names are prefixed with "gg/"
-- Before opening a pull request, ask the user to confirm the description
-- Don't explicitly wrap lines in the PR description (each paragraph and bullet is a single line)
-- When creating a pull request, look for the repository's PR template and follow it
-- For the AI usage disclosure section, write "YES. pi:llama.cpp/[MODEL]"
+- This repo takes no pull requests: changes are committed straight to the `densex` branch (see `AGENTS.md`, "Version control"). Never push, open a PR or add a remote without the owner's explicit confirmation
+- There is no PR template and no AI-disclosure section here; work is tracked as GitHub issues (https://github.com/bext1998/DenseX/issues) instead
 - If `PI_MODEL_NAME` env var is not set, ask the user to tell you what model was used and write it in place of [MODEL]
-- Always create the pull requests in draft mode
 - Never reply to review comments or post comments on issues/PRs without explicit permission from the user
 
 Commits:
-- On every commit that you make, include a "Assisted-by: pi:llama.cpp/[MODEL]" tag
+- On every commit that you make, include a "Co-Authored-By: pi:[MODEL] <noreply@densex.local>" tag (unless the task gives you the exact trailer to use - then copy it verbatim)
 - Do not explicitly set the git author in commits - rely on the default git config
 - Always use `--no-gpg-sign` when committing
 - Never `git push` without explicit confirmation from the user

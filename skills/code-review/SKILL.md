@@ -1,22 +1,24 @@
 ---
 name: code-review
-description: Review llama.cpp changes against project conventions and common reviewer pitfalls before a PR. Use when the user wants to review a diff, branch, or PR.
+description: Review DenseX changes against project conventions and common reviewer pitfalls before they are committed. Use when the user wants to review a diff, commit, or branch.
 ---
 
-# Review llama.cpp changes
+# Review DenseX changes
 
-This skill reviews changes against llama.cpp's conventions and the pitfalls that reviewers flag most often, so the contributor can fix them before a maintainer has to. It has two modes:
+DenseX is an independent fork of llama.cpp: no upstream PRs, work lands as GitHub issues (https://github.com/bext1998/DenseX/issues) plus commits on `densex`. Where this skill inherited upstream text about PRs, read "PR" as "the change" (its issue plus its commit).
 
-- **Self-review (default):** review the contributor's own local changes (uncommitted work, or a branch vs `master`) as a pre-PR pass. Ask which if it's ambiguous; default to `git diff master...HEAD` plus any uncommitted changes.
-- **Read-only review of a PR/file:** if the user points at a PR number or specific files (including code they didn't write), review those and report findings.
+This skill reviews changes against the project's conventions and the pitfalls reviewers flag most often, so the author can fix them before they are committed. It has two modes:
 
-In both modes the output is **private review notes for the user to read and act on** - it is never something to post. This is a hard rule from `AGENTS.md`: an agent must NEVER write, or help write, a PR comment, a review comment, or a reply to a reviewer, by any means including `gh`. Do not offer to. If the user asks you to post the notes, refuse and point them at that rule. Present findings in the conversation only.
+- **Self-review (default):** review the contributor's own local changes (uncommitted work, or a commit under review) as a pre-commit pass. Ask which if it's ambiguous; default to `git diff HEAD` plus `git show <commit>` when a commit is named.
+- **Read-only review of a change/file:** if the user points at a commit or specific files (including code they didn't write), review those and report findings.
 
-Before starting, read `AGENTS.md` and `CONTRIBUTING.md` if not already in context - the "Coding guidelines", "Naming guidelines", and AI usage sections are the baseline this review enforces. For a diff that adds a new model architecture, also read `docs/development/HOWTO-add-model.md` and consider the dedicated `add-new-model` skill.
+In both modes the output is **private review notes for the user to read and act on** - it is never something to post. Posting anything through `gh` (review comments, issue replies) or pushing needs the owner's explicit approval, per `AGENTS.md` ("Version control"). Present findings in the conversation only.
+
+Before starting, read `AGENTS.md` and `CONTRIBUTING.md` if not already in context - `AGENTS.md`'s "Code style" and `CONTRIBUTING.md`'s "Code style"/"AI usage" sections are the baseline this review enforces. For a diff that adds a new model architecture, also read `docs/development/HOWTO-add-model.md` and consider the dedicated `add-new-model` skill.
 
 ## Step 0 - Scope the diff and pick the checklists
 
-Identify what actually changed and which area checklists below apply. Run `git diff --stat` (or `gh pr view <n> --json files` for PR mode) and bucket the touched paths:
+Identify what actually changed and which area checklists below apply. Run `git diff --stat` (or `git show --stat <commit>`) and bucket the touched paths:
 
 - `conversion/`, `gguf-py/`, `src/models/`, `src/llama-arch.*` -> **New model / architecture**
 - `ggml/` (any backend, op, or `ggml.h`) -> **ggml / backend**
@@ -30,18 +32,18 @@ Always run the **Scope and quick-reject gate**, the **Security review**, and the
 
 ## Scope and quick-reject gate (always)
 
-These are the patterns that get PRs closed without a full review. Check them first - a finding here is more important than any code nit, because it can mean the change shouldn't be a PR in its current form at all.
+These are the patterns that get changes rejected without a full review. Check them first - a finding here is more important than any code nit, because it can mean the change shouldn't be made in its current form at all.
 
-- Is there a prior issue/discussion for this? Features are supposed to start as an issue, not a PR (`CONTRIBUTING.md`). If this is a nontrivial feature with no linked issue, flag it and suggest opening one first.
-- Is it a duplicate of existing/in-flight work? Suggest `gh search prs` / `gh search issues` for the feature. Many closed PRs were duplicates of something already queued.
-- Is it self-contained and single-purpose? Multiple unrelated changes/optimizations bundled together get sent back to be split. Flag unrelated changes and suggest separate PRs.
-- Does it touch multiple ggml backends at once? Initial support should be CPU-only, other backends as follow-ups (`CONTRIBUTING.md`). Flag CUDA/Metal/Vulkan/etc. changes bundled into a feature's first PR.
+- Is there a prior issue for this? Work is supposed to start from an issue, not from code (`CONTRIBUTING.md`, "Where work comes from"). If this is nontrivial and has no linked issue, flag it and suggest opening one first.
+- Is it a duplicate of existing/in-flight work? Suggest `gh search issues --repo bext1998/DenseX <term>` for the feature. Duplicates of something already queued get closed.
+- Is it self-contained and single-purpose? Multiple unrelated changes/optimizations bundled together should be split into separate issues/commits. Flag unrelated changes.
+- Does it touch multiple ggml backends at once? Initial support should be CPU-only, other backends as follow-ups. Flag CUDA/Metal/Vulkan/etc. changes bundled into a feature's first change.
 - Does it add a new `ggml_type` / quantization type? That carries a disproportionate maintenance burden and needs the full justification package (GGUF sample upload, perplexity vs FP16/BF16 and similar sizes, KL-divergence data, CPU perf numbers). Absent that, it will be rejected regardless of code quality.
 - Is it invasive - new subsystem, core-API reshaping, changes to shared graph/sampler code that other models don't need? Flag it and suggest a discussion with maintainers before investing further.
 - Does it add a model-specific CLI argument to any binary (`common/arg.cpp`, tools, examples) or conversion script (`convert_*.py`)? Not allowed - model-specific behavior must come from GGUF metadata or be detected automatically, not from a per-model flag.
 - Is it niche/vendor-specific in a way that adds a maintenance burden nobody will own long-term? Flag the maintenance-ownership question.
 - Is the change semantically correct, or a plausible-looking "fix" that misunderstands the code? Sanity-check the actual behavior, not just that it compiles.
-- AI-disclosure: if AI meaningfully contributed, is the PR template's disclosure section filled in? Remind the user. Never suggest writing the PR description or commit message for them.
+- AI usage: if AI meaningfully contributed, is that visible in the commit trailer and the issue comment (`CONTRIBUTING.md`, "AI usage")? Never hide AI involvement.
 
 ## Security review (mandatory)
 
@@ -93,22 +95,22 @@ See the `add-new-model` skill and `docs/development/HOWTO-add-model.md` for the 
 - No hardcoded warp/lane size - use `ggml_cuda_get_physical_warp_size()` (32 on CUDA, 64 on HIP/ROCm) and the portable helpers.
 - Strip leftover debug/profiling/logging code before review.
 - New or changed op? Update `docs/ops.md` and the relevant `docs/ops/*.csv` for the touched backend.
-- New op or operator change needs corresponding `test-backend-ops` cases, and (per `CONTRIBUTING.md`) consistency across at least two backends.
+- New op or operator change needs corresponding `test-backend-ops` cases, and consistency across the backends DenseX still ships (CPU and CUDA).
 - New kernels are expected to come with concrete perf data (throughput across realistic tensor shapes), not just correctness.
 - Don't have a backend mutate the cgraph as a shortcut - that's an unresolved architectural question, not something to slip in.
-- Expect this to need two maintainer approvals; that's normal for `ggml/` changes, not a sign something is wrong.
+- `ggml/` changes carry extra risk: run the affected `test-backend-ops` cases and, for CUDA, `sanitize.ps1` (`CONTRIBUTING.md`, "Testing before you commit").
 - For CUDA: Avoid excessively templating kernels, only add this where it shows visible performance gain.
 
 ## Public API (`include/llama.h`)
 
-Public API changes carry a higher bar than internal ones (`CONTRIBUTING.md`). Review for:
+Public API changes carry a higher bar than internal ones - settle the justification in an issue first. Review for:
 
-- Justification: why doesn't an existing mechanism (e.g. `cb_eval`, existing batch/sampler knobs) suffice? If it does, the change likely shouldn't add public surface. This is the single most common reason these PRs are rejected.
+- Justification: why doesn't an existing mechanism (e.g. `cb_eval`, existing batch/sampler knobs) suffice? If it does, the change likely shouldn't add public surface. This is the single most common reason these changes get rejected.
 - Experimental or stop-gap surface belongs in a side header (`llama-ext.h`), not in `llama.h`.
 - Keep it minimal and general: prefer one general call over several narrow convenience wrappers; make new calls forward-compatible (e.g. mixed-modality batches) rather than assuming today's shape.
 - The C API is the first-class, stable, ABI-defining surface - don't propose a parallel C++ API as a replacement. `llama-cpp.h` stays a thin convenience layer.
 - Types and naming: sized integer types (`int32_t`, `size_t` for sizes/offsets); `snake_case`; `<class>_<method>` = `<class>_<action>_<noun>`; enum values upper-case and prefixed with the enum name; `_t` suffix for opaque types. Avoid gratuitous signature/ABI changes to existing exported functions.
-- Every new API needs a working example/tool exercising it in the same PR - reviewers find real bugs by requiring it to be wired into `server`, `embedding`, `perplexity`, etc.
+- Every new API needs a working example/tool exercising it in the same change - reviewers find real bugs by requiring it to be wired into `server`, `embedding`, `perplexity`, etc.
 
 ## Server (`tools/server/`)
 
@@ -189,22 +191,22 @@ Adjacent data-shape rule: empty string is not a valid "unset" initial state - us
 - Sanitize anything rendered from model or remote data: the rehype/`{@html}` pipeline, SVG content, and URLs (use the `$lib/utils` URL sanitizer rather than ad-hoc checks or a third-party lib for trivial cases).
 - Proxy headers and agent/tool filesystem access are security boundaries - scope enforcement (e.g. browse-root sandboxing) must be validated end-to-end, not just in the UI; loop in server reviewers for the C++ side.
 
-### PR hygiene specific to `tools/ui`
+### Hygiene specific to `tools/ui`
 
-- Build artifacts are not committed - the UI is built by CI (`.github/workflows/ui-build.yml`) and downloaded/bundled at release time. `npm run build` must still succeed locally; a red UI build job is blocking.
+- Build artifacts are not committed - the UI is built locally and bundled by `scripts/ui-assets.cmake`. `npm run build` must still succeed locally; DenseX's only CI workflow (`.github/workflows/densex-ci.yml`) is CPU-only and does not build the UI, so a broken UI build is caught locally, not by CI.
 - `npm run lint && npm run check` (and `npm run format`) must pass; a failing Storybook test is blocking.
-- PRs with user-facing interactive or visual changes need a short video demo in the description showing the change working (screenshots are acceptable for pure-visual tweaks). Test-only, refactor, docs, and config PRs don't need a demo.
-- Scope discipline: changes that belong to another stacked PR don't ride along in this one - call them out and move them there. Flag unrelated edits to deprecated/legacy files and ask whether they're intentional.
+- Changes with user-facing interactive or visual effects should come with a short demo (video or screenshots) in the issue comment showing the change working. Test-only, refactor, docs, and config changes don't need a demo.
+- Scope discipline: changes that belong to another piece of work don't ride along in this one - call them out and move them there. Flag unrelated edits to deprecated/legacy files and ask whether they're intentional.
 - New nontrivial utils and parsing logic get Vitest unit tests; reusable UI components get Storybook stories/tests when practical.
 
 ## Multimodal (`tools/mtmd/`)
 
 - Tensor names must be prefixed by `v.`, `a.`, `mm.` or `a.mm.` (legacy naming doesn't follow this convention - this is expected, but new code should follow it).
-- Do not use explicit sin/cos for RoPE; use `ggml_rope_ext` instead, see `HOWTO-add-model.md`. If it can't express the needed behavior, that's a design discussion, not a PR.
-- New GGML ops must not be introduced in the same PR, you must push it as a separate PR.
-- In most cases, `build_vit` should be enough to build the transformer graph for vision models. Do not add a loop to build the transformer graph manually, unless you have a very good reason to do so. If you do, please explain why in the PR description.
+- Do not use explicit sin/cos for RoPE; use `ggml_rope_ext` instead, see `HOWTO-add-model.md`. If it can't express the needed behavior, that's a design discussion, not a quick patch.
+- New GGML ops must not be introduced in the same change, land them as a separate one.
+- In most cases, `build_vit` should be enough to build the transformer graph for vision models. Do not add a loop to build the transformer graph manually, unless you have a very good reason to do so. If you do, please explain why in the issue comment and the commit message.
 - If you need a dedicated preprocessor, there is a high chance that it can be a derived class from one of the existing preprocessors. Check carefully before adding a new preprocessor class.
-- If the model need a new public API in `mtmd.h`, open a discussion first.
+- If the model need a new public API in `mtmd.h`, settle it in an issue first.
 - For audio generation models, see `tools/mtmd/README-dev.md`
 
 ## Tests
@@ -218,26 +220,26 @@ Adjacent data-shape rule: empty string is not a valid "unset" initial state - us
 
 ## General (always)
 
-Enforce the `AGENTS.md` / `CONTRIBUTING.md` coding and naming guidelines on every changed line - this is a distinct pass from checking that the code works, and matters just as much for review speed:
+Enforce the `AGENTS.md` "Code style" / `CONTRIBUTING.md` "Code style" guidelines on every changed line - this is a distinct pass from checking that the code works, and matters just as much for review speed:
 
 - ASCII only in code and comments - no emdash, unicode arrows, `x`, `...` used as unicode; use `-`, `->`, `x`, `...` ASCII equivalents.
 - Comments are concise and explain non-obvious *why*, not *what*. Flag verbose comments, comments that restate the code, comments that reference the current task/PR, and comments hard-wrapped to a fixed column width.
 - Do not force-wrap prose/comments to a fixed character count or split a sentence across lines.
 - `snake_case` names; `kebab-case` (lowercase-with-dashes) file names for C/C++, `.h` headers; Python files lowercase-with-underscores. Naming optimizes for longest common prefix (`number_small`, not `small_number`).
 - 4-space indentation, brackets on the same line, `void * ptr`, `int & a`, no trailing whitespace; match the surrounding style.
-- Before pushing the PR, run the code style check and editorconfig check locally (see `.github/workflows/code-style.yml` and `.github/workflows/editorconfig.yml`). If the change touches Python code, also run the Python type check (`.github/workflows/python-type-check.yml`).
+- Before committing, run the checks that exist for this repo (`CONTRIBUTING.md`, "Testing before you commit"): build through the build script (`scripts/densex/build.ps1`, or `../build.ps1` in the research workspace), the regression net `regress.ps1` (`REGRESS_PASS`), and the editorconfig check (`.ecrc`) locally. DenseX's only workflow, `.github/workflows/densex-ci.yml`, runs the CPU configure/build/test path.
 - Reuse existing infrastructure over introducing new components; no new third-party dependencies, extra headers, or files unless clearly justified.
 - Keep it simple: a simpler change doing 90% is often preferable to a complex one doing 100%. Flag unnecessary templates/fancy STL; basic `for` loops are fine here.
 - Every added line should be something the contributor can explain and defend to a reviewer without AI help - flag anything that looks copied-in without understanding.
-- `Co-authored-by:` must be reserved for human co-authors; AI contributions (claude, cursor, codex, etc.) must use `Assisted-by:`; if this point is violated, it's a blocking finding.
+- Commit trailers follow the task/`AGENTS.md`; in this repo AI co-authorship is written as `Co-Authored-By: <agent> <noreply@densex.local>` (see `git log`). The upstream `Assisted-by:` rule does not apply here - do not flag a `Co-Authored-By:` AI trailer as a finding.
 - Any mentions of Minja must be treated as blocking; see `AGENTS.md` for why.
 
 ## Reporting
 
 Group findings by severity so the user knows what actually blocks a merge:
 
-1. **Blocking** - quick-reject/scope issues and correctness bugs; these can sink the PR regardless of everything else.
+1. **Blocking** - quick-reject/scope issues and correctness bugs; these can sink the change regardless of everything else.
 2. **Will slow the review** - convention/naming/comment violations, missing tests/docs/perf data, missing API justification or example.
 3. **Nits** - minor style, optional cleanups.
 
-For each finding, point to the file and line and say concretely what to change and why. Do not rewrite the whole diff unprompted; let the contributor make the fixes so they own and understand them. And do not draft any PR text, commit message, or reviewer reply - that is the contributor's to write.
+For each finding, point to the file and line and say concretely what to change and why. Do not rewrite the whole diff unprompted; let the contributor make the fixes so they own and understand them. And do not post any of it yourself - the review notes are delivered in the conversation, never through `gh`.
