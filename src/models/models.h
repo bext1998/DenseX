@@ -72,12 +72,12 @@ struct llm_build_delta_net_base : public llm_graph_context {
 
 struct llama_model_deepseek4 : public llama_model_base {
     llama_model_deepseek4(const struct llama_model_params & params) : llama_model_base(params) {}
-    void load_arch_hparams(llama_model_loader & ml) override;
-    void load_arch_tensors(llama_model_loader & ml) override;
 
+    // DenseX: only this nested graph is still reachable. The DeepSeek-V4 model class itself is not in the
+    // factory (llama-model.cpp), so its hparams/tensor loader, its build_arch_graph() and graph_mtp died with it;
+    // graph_dsv4 in llama_model_dflash is what keeps the shared graph alive (issue #86 phase 4).
     struct graph : public llm_graph_context {
         graph(const llm_graph_params & params) : llm_graph_context(params) {}
-        graph(const llama_model & model, const llm_graph_params & params);
 
         // collapse the hc streams with per-stream weights
         ggml_tensor * build_hc_pre(
@@ -203,12 +203,6 @@ struct llama_model_deepseek4 : public llama_model_base {
                 int il) const;
 
     };
-
-    struct graph_mtp : public graph {
-        graph_mtp(const llama_model & model, const llm_graph_params & params);
-    };
-
-    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
 
 
