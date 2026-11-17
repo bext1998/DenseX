@@ -31,6 +31,7 @@ cmake --build build --config Release
 **Notes**:
 
 - DenseX does not build the demo targets by default: `examples/` and `pocs/` are gated on `LLAMA_BUILD_EXAMPLES`, which defaults to `OFF` here (upstream defaults it to `ON`). Add `-DLLAMA_BUILD_EXAMPLES=ON` to build them.
+- Five extra tools are kept out of the default build: `llama-export-lora`, `llama-results`, `llama-batched-bench`, `llama-completion` and `llama-fit-params` are excluded from `all` (`tools/CMakeLists.txt`) but stay buildable as named targets, e.g. `cmake --build build --target llama-results`. Because they are not part of `all`, a `cmake --install` right after a default build has no binary to install for them - build the ones you want by name first. The tools DenseX ships (server, cli, UI, mtmd, perplexity, quantize, llama-bench, imatrix, tokenize, gguf-split) still build as part of `all`.
 - For faster compilation, add the `-j` argument to run multiple jobs in parallel, or use a generator that does this automatically such as Ninja. For example, `cmake --build build --config Release -j 8` will run 8 jobs in parallel.
 - For faster repeated compilation, install [ccache](https://ccache.dev/)
 - For debug builds, there are two cases:
