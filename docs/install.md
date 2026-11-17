@@ -1,12 +1,13 @@
 # Install pre-built version of llama.cpp
 
+> DenseX note: everything below installs **upstream llama.cpp** packages, not DenseX. DenseX is built from source - see [`docs/densex/INSTALL.md`](densex/INSTALL.md). The packaging chain for this repo (Docker, Nix flake, RPM) was removed in issue #86.
+
 | Install via | Windows | Mac  | Linux |
 |-------------|---------|------|-------|
 | conda-forge | ✅      | ✅   | ✅   |
 | Winget      | ✅      |      |      |
 | Homebrew    |         | ✅   | ✅   |
 | MacPorts    |         | ✅   |      |
-| Nix         |         | ✅   | ✅   |
 
 ## conda-forge (Windows, Mac and Linux)
 
@@ -57,20 +58,3 @@ sudo port install llama.cpp
 
 See also: https://ports.macports.org/port/llama.cpp/details/
 
-## Nix (Mac and Linux)
-
-```sh
-nix profile install nixpkgs#llama-cpp
-```
-
-For flake enabled installs.
-
-Or
-
-```sh
-nix-env --file '<nixpkgs>' --install --attr llama-cpp
-```
-
-For non-flake enabled installs.
-
-This expression is automatically updated within the [nixpkgs repo](https://github.com/NixOS/nixpkgs/blob/nixos-24.05/pkgs/by-name/ll/llama-cpp/package.nix#L164).

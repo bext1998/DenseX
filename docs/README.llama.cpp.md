@@ -30,7 +30,7 @@ irm https://llama.app/install.ps1 | iex
 ```
 
 - Visit https://llama.app and follow the instructions
-- Run with Docker - see our [Docker documentation](docs/docker.md)
+- Run with Docker - see the upstream [Docker documentation](https://github.com/ggml-org/llama.cpp/blob/master/docs/docker.md) (not carried into this fork)
 - Download pre-built binaries from the [releases page](https://github.com/ggml-org/llama.cpp/releases)
 - Build from source by cloning this repository - check out [our build guide](docs/build.md)
 
@@ -90,7 +90,7 @@ The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-or
 #### Development
 
 - [How to build](docs/build.md)
-- [Running on Docker](docs/docker.md)
+- Running on Docker - upstream only: [docs/docker.md](https://github.com/ggml-org/llama.cpp/blob/master/docs/docker.md) (not carried into this fork)
 - [Build on Android](docs/android.md)
 - [Multi-GPU usage](docs/multi-gpu.md)
 - [Performance troubleshooting](docs/development/token_generation_performance_tips.md)
