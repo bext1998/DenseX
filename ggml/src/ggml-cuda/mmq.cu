@@ -230,9 +230,18 @@ void ggml_cuda_mul_mat_q(
     const size_t src1_q8_1_padding = ((J_best * sizeof(block_q8_1_mmq) + src1_load_chunk_size - 1) / src1_load_chunk_size)
         * src1_load_chunk_size;
 
+    // #81: mul_mat_q_process_tile loads (and stores into its shared memory copy) a whole J*MMQ_TILE_Y_K tile with a
+    // thread-parallel loop whose last iteration can run up to nthreads - 1 ints past the tile, and for a y tile that
+    // is narrower than J it also reads the columns past tile_y_max_j. Both stay inside the padding below (it is at
+    // least nthreads*sizeof(int) bytes and a full tile is rounded up to that), but nothing ever writes it, so
+    // compute-sanitizer initcheck reports those reads as uninitialized. The values only reach output columns that
+    // write_back masks, so zero the padding to make the reads well defined instead of changing the hot loop (a guard
+    // there cost 10-16% of prefill on the 27B model, see #81).
+
     if (!ids) {
         const size_t nbytes_src1_q8_1 = ne13*ne12 * ne11*ne10_padded * y_block_size/y_values_per_block + src1_q8_1_padding;
         ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), nbytes_src1_q8_1);
+        CUDA_CHECK(cudaMemsetAsync(src1_q8_1.get() + (nbytes_src1_q8_1 - src1_q8_1_padding), 0, src1_q8_1_padding, stream));
         ggml_cuda_pool_alloc<float> src1_scale(ctx.pool());
         if (src0->type == GGML_TYPE_NVFP4 && use_native_fp4) {
             src1_scale.alloc(ne13*ne12*ne11);
@@ -301,6 +310,7 @@ void ggml_cuda_mul_mat_q(
 
     const size_t nbytes_src1_q8_1 = ne12*n_expert_used*ne10_padded * y_block_size/y_values_per_block + src1_q8_1_padding;
     ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), nbytes_src1_q8_1);
+    CUDA_CHECK(cudaMemsetAsync(src1_q8_1.get() + (nbytes_src1_q8_1 - src1_q8_1_padding), 0, src1_q8_1_padding, stream));
     ggml_cuda_pool_alloc<float> src1_scale(ctx.pool());
     if (src0->type == GGML_TYPE_NVFP4 && use_native_fp4) {
         src1_scale.alloc(ne12*n_expert_used);
