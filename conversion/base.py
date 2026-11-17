@@ -742,7 +742,6 @@ class ModelBase:
             gguf.MODEL_ARCH.QWEN3,
             gguf.MODEL_ARCH.QWEN3MOE,
             gguf.MODEL_ARCH.QWEN35,
-            gguf.MODEL_ARCH.QWEN35MOE,
             gguf.MODEL_ARCH.QWEN3NEXT,
         }
         if self.model_arch not in _HADAMARD_ARCHS:

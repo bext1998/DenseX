@@ -39,7 +39,6 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_QWEN3VL,          "qwen3vl"          },
     { LLM_ARCH_QWEN3VLMOE,       "qwen3vlmoe"       },
     { LLM_ARCH_QWEN35,           "qwen35"           },
-    { LLM_ARCH_QWEN35MOE,        "qwen35moe"        },
     { LLM_ARCH_CLEF,             "clef"             },
     { LLM_ARCH_VLLM_DECISION2,   "vllm-decision2"   },
     { LLM_ARCH_QWEN4EXP,         "qwen4exp"         },
@@ -1208,7 +1207,6 @@ bool llm_arch_is_hybrid(const llm_arch & arch) {
         case LLM_ARCH_KIMI_K3:
         case LLM_ARCH_GLM5_NEXT:
         case LLM_ARCH_QWEN35:
-        case LLM_ARCH_QWEN35MOE:
         case LLM_ARCH_QWEN4EXP:
         case LLM_ARCH_DEEPSEEK4:
         case LLM_ARCH_MINIMAX_01:
@@ -1234,7 +1232,6 @@ bool llm_arch_supports_rs_rollback(const llm_arch & arch) {
     switch (arch) {
         case LLM_ARCH_KIMI_K3:
         case LLM_ARCH_QWEN35:
-        case LLM_ARCH_QWEN35MOE:
         case LLM_ARCH_QWEN4EXP:
         case LLM_ARCH_DEEPSEEK4:
         case LLM_ARCH_GLM5_NEXT:

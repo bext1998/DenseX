@@ -942,7 +942,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     // One MTP draft driver, three modes (set once in the ctor):
     //   is_mem_shared (gemma4): shares the target KV, runs all heads in one graph.
     //   chain_heads (step35): n_mtp_layers trained heads, one per draft step.
-    //   neither (qwen35 / qwen35moe): a single trained MTP head.
+    //   neither (qwen35): a single trained MTP head.
     int32_t n_mtp_layers  = 1;
     bool    is_mem_shared = false;   // gemma4
     bool    chain_heads   = false;   // derived in the ctor: n_mtp_layers > 1 && !is_mem_shared

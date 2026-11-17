@@ -648,8 +648,8 @@ class _LinearAttentionVReorderBase(Qwen3NextModel):
 
 class _Qwen35MRopeMixin:
     # Qwen3.5 always applies interleaved MRoPE (see Qwen3_5RotaryEmbedding in transformers);
-    # the upstream default mrope_section is [11, 11, 10] and llama.cpp's QWEN35 / QWEN35MOE
-    # loaders treat qwen35.rope.dimension_sections as required, so make sure it is always
+    # the upstream default mrope_section is [11, 11, 10] and the QWEN35
+    # loader treats qwen35.rope.dimension_sections as required, so make sure it is always
     # written even when a particular checkpoint omits the field in `rope_parameters`.
     _QWEN35_DEFAULT_MROPE_SECTION = [11, 11, 10, 0]
 
@@ -735,12 +735,6 @@ class OpenJevModel(Qwen3_5TextModel):
         self.gguf_writer.add_decision_temperature("choice", self._TEMPERATURE)
         self.gguf_writer.add_decision_temperature("score",  self._TEMPERATURE)
         self.gguf_writer.add_decision_temperature("noul",   self._TEMPERATURE * self._TEMPERATURE_NOUL)
-
-
-@ModelBase.register("Qwen3_5MoeForConditionalGeneration", "Qwen3_5MoeForCausalLM")
-@ModelBase.example("Qwen/Qwen3.5-35B-A3B")
-class Qwen3_5MoeTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
-    model_arch = gguf.MODEL_ARCH.QWEN35MOE
 
 
 @ModelBase.register("DFlashDraftModel", "DFlash2DraftModel")

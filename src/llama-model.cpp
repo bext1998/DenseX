@@ -47,12 +47,10 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
     switch (arch) {
         case LLM_ARCH_QWEN35: // Qwen 3.8 main model
             return new llama_model_qwen35(params);
-        case LLM_ARCH_QWEN35MOE: // Qwen 3.8 MoE
-            return new llama_model_qwen35moe(params);
         case LLM_ARCH_DFLASH: // draft model for --spec-type draft-dflash (bench/e1_long.py --draft-model)
             return new llama_model_dflash(params);
         default:
-            throw std::runtime_error("DenseX only supports qwen35, qwen35moe and dflash architectures, but this model is '"
+            throw std::runtime_error("DenseX only supports qwen35 and dflash architectures, but this model is '"
                     + std::string(llm_arch_name(arch)) + "'");
     }
 
@@ -318,7 +316,7 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
     // if a model has fused tensors they need to be separated into "segments", see the comments on ggml_backend_meta_split_state struct
     auto get_split_segments = [&](int axis, uint32_t il) -> std::vector<std::pair<int64_t, uint32_t>> {
         // TODO: deduplicate condition [TAG_SPLIT_QGATE_QWEN]
-        if (ud->model->arch == LLM_ARCH_QWEN3NEXT || ud->model->arch == LLM_ARCH_QWEN35 || ud->model->arch == LLM_ARCH_QWEN35MOE || ud->model->arch == LLM_ARCH_CLEF ||
+        if (ud->model->arch == LLM_ARCH_QWEN3NEXT || ud->model->arch == LLM_ARCH_QWEN35 || ud->model->arch == LLM_ARCH_CLEF ||
                 ud->model->arch == LLM_ARCH_QWEN4EXP) {
 
             // fused full attention layers with Q gate tensors that need n_embd doubled:
@@ -473,7 +471,7 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
                 GGML_ASSERT(segments.size() == 1);
                 // some models have Q gate tensors, for those cases the granularity needs to be doubled:
                 // TODO: deduplicate condition [TAG_SPLIT_QGATE_QWEN]
-                if (ud->model->arch == LLM_ARCH_QWEN3NEXT || ud->model->arch == LLM_ARCH_QWEN35 || ud->model->arch == LLM_ARCH_QWEN35MOE || ud->model->arch == LLM_ARCH_CLEF ||
+                if (ud->model->arch == LLM_ARCH_QWEN3NEXT || ud->model->arch == LLM_ARCH_QWEN35 || ud->model->arch == LLM_ARCH_CLEF ||
                         ud->model->arch == LLM_ARCH_QWEN4EXP) {
                     return {std::lcm(2*n_embd_q, blck_size_perf)};
                 }
@@ -507,7 +505,7 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             if (std::regex_match(tensor_name, pattern_qkv_weight) || std::regex_match(tensor_name, pattern_qkv_bias)) {
                 // fused full attention layers need Q gate tensors handled like above:
                 // TODO: deduplicate condition [TAG_SPLIT_QGATE_QWEN]
-                if (ud->model->arch == LLM_ARCH_QWEN3NEXT || ud->model->arch == LLM_ARCH_QWEN35 || ud->model->arch == LLM_ARCH_QWEN35MOE || ud->model->arch == LLM_ARCH_CLEF ||
+                if (ud->model->arch == LLM_ARCH_QWEN3NEXT || ud->model->arch == LLM_ARCH_QWEN35 || ud->model->arch == LLM_ARCH_CLEF ||
                         ud->model->arch == LLM_ARCH_QWEN4EXP) {
                     return {std::lcm(2*n_embd_q, blck_size_perf), granularity_kv};
                 }
@@ -1887,7 +1885,6 @@ void llama_model_base::load_hparams_hadamard(llama_model_loader & ml) {
         // only build_lora_mm/build_lora_mm_id apply the transform: refuse archs and tensor kinds that can skip them
         switch (arch) {
             case LLM_ARCH_QWEN35:
-            case LLM_ARCH_QWEN35MOE:
                 break;
             default:
                 throw std::runtime_error(format(
@@ -2324,7 +2321,6 @@ void llama_model::print_info() const {
                 arch == LLM_ARCH_GRANITE_HYBRID ||
                 arch == LLM_ARCH_QWEN3NEXT ||
                 arch == LLM_ARCH_QWEN35 ||
-                arch == LLM_ARCH_QWEN35MOE ||
                 arch == LLM_ARCH_NEMOTRON_H ||
                 arch == LLM_ARCH_NEMOTRON_H_MOE) {
             LLAMA_LOG_INFO("%s: ssm_d_conv            = %u\n",     __func__, hparams.ssm_d_conv);
@@ -2574,7 +2570,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                 // Dense MTP heads use a plain attention KV cache instead of the hybrid wrapper.
                 const bool mtp_on_hybrid_qwen =
                     params.ctx_type == LLAMA_CONTEXT_TYPE_MTP &&
-                    (arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE ||
+                    (arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 ||
                      arch == LLM_ARCH_BAILINGMOE3);
 
                 const bool mtp_on_hybrid_nemotron =
@@ -2605,7 +2601,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         filter_recr = [&](uint32_t il) {
                             return hparams.is_recr(il) && hparams.n_ff(il) == 0;
                         };
-                    } else if (arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE || arch == LLM_ARCH_QWEN4EXP || arch == LLM_ARCH_MINIMAX_01) {
+                    } else if (arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN4EXP || arch == LLM_ARCH_MINIMAX_01) {
                         filter_attn = [&](uint32_t il) {
                             return il < hparams.n_layer() && !hparams.is_recr(il);
                         };
@@ -2939,7 +2935,6 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
             // DSV4 DSpark drafters use DeepSeek-V4's normal RoPE; legacy DFlash backbones are NeoX
             return model->hparams.dsv4_hc_mult > 0 ? LLAMA_ROPE_TYPE_NORM : LLAMA_ROPE_TYPE_NEOX;
         case LLM_ARCH_QWEN35:
-        case LLM_ARCH_QWEN35MOE:
             return LLAMA_ROPE_TYPE_IMROPE;
 
         // all model arches should be listed explicitly here

@@ -256,8 +256,6 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "Qwen3VLMoeForConditionalGeneration": "qwen3vl",
     "Qwen3_5ForCausalLM": "qwen",
     "Qwen3_5ForConditionalGeneration": "qwen",
-    "Qwen3_5MoeForCausalLM": "qwen",
-    "Qwen3_5MoeForConditionalGeneration": "qwen",
     "Qwen3_5TextModel": "qwen",
     "Qwen4ExpForCausalLM": "qwen4exp",
     "Qwen4ExpForConditionalGeneration": "qwen4exp",

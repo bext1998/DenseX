@@ -46,7 +46,6 @@ llama_memory_recurrent::llama_memory_recurrent(
     if (want_deferred) {
         switch (model.arch) {
             case LLM_ARCH_QWEN35:
-            case LLM_ARCH_QWEN35MOE:
             case LLM_ARCH_QWEN3NEXT:
                 break;
             default:

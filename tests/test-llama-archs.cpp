@@ -99,7 +99,6 @@ static void usage(char ** argv) {
     LOG("  -h, --help               Show this help message\n\n");
     LOG("Examples:\n");
     LOG("  %s\n", argv[0]);
-    LOG("  %s -a qwen35moe\n", argv[0]);
     LOG("  %s -a deepseek4 -o tests/test-models/\n", argv[0]);
     LOG("  %s -a cohere2moe -v 5\n", argv[0]);
 }
@@ -464,7 +463,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     ms.add_kv(LLM_KV_XIELU_ALPHA_P,             1.0f);
     ms.add_kv(LLM_KV_XIELU_BETA,                1.0f);
     ms.add_kv(LLM_KV_XIELU_EPS,                 1.0e-7f);
-    ms.add_kv(LLM_KV_SSM_INNER_SIZE,            arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE || arch == LLM_ARCH_QWEN4EXP ? 256 : 2*n_embd);
+    ms.add_kv(LLM_KV_SSM_INNER_SIZE,            arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN4EXP ? 256 : 2*n_embd);
     ms.add_kv(LLM_KV_SSM_CONV_KERNEL,           uint32_t(4));
     ms.add_kv(LLM_KV_SSM_STATE_SIZE,            uint32_t(128));
     ms.add_kv(LLM_KV_SSM_TIME_STEP_RANK,        n_head);
@@ -674,7 +673,6 @@ static bool moe_mandatory(const llm_arch arch) {
         case LLM_ARCH_QWEN3MOE:
         case LLM_ARCH_QWEN3NEXT:
         case LLM_ARCH_QWEN3VLMOE:
-        case LLM_ARCH_QWEN35MOE:
         case LLM_ARCH_QWEN4EXP:
         case LLM_ARCH_PHIMOE:
         case LLM_ARCH_DBRX:
@@ -745,8 +743,9 @@ static bool moe_implemented(const llm_arch arch) {
 static bool arch_supported(const llm_arch arch) {
     // DenseX only runs qwen35-family models (issue #10): generate and test exactly the arches
     // the factory still builds. dflash/eagle3 have no dummy fixture (save_models skips them
-    // anyway), so the supported set here is qwen35 + qwen35moe.
-    if (arch != LLM_ARCH_QWEN35 && arch != LLM_ARCH_QWEN35MOE) {
+    // anyway), so the supported set here is qwen35 (qwen35moe was dropped with MoE support,
+    // issue #86 phase 4).
+    if (arch != LLM_ARCH_QWEN35) {
         return false;
     }
     if (arch == LLM_ARCH_CLIP || arch == LLM_ARCH_GPTJ || arch == LLM_ARCH_UNKNOWN) {
