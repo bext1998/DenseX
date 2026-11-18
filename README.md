@@ -13,7 +13,7 @@ The results below use **Swift 1.5 IQ3_XXS-mtp on an RTX 3060 12 GB** as the meas
 
 DenseX started from [llama.cpp](https://github.com/ggml-org/llama.cpp) commit `620d2225` and is now an independent project: it does not track or merge upstream.
 
-> **Status: research / experimental.** Tested only on Windows 11 + RTX 3060 12 GB + Ryzen 5 3600X (32 GB RAM). Most DenseX features are opt-in switches, off by default. The codebase is being cleaned up (unused backends and model architectures will be removed).
+> **Status: research / experimental.** Tested only on Windows 11 + RTX 3060 12 GB + Ryzen 5 3600X (32 GB RAM). Most DenseX features are opt-in switches, off by default. The upstream backends and model architectures DenseX never runs have been removed from the engine (`ggml/src/` keeps `ggml-cpu` and `ggml-cuda`; the model factory and arch enum keep `qwen35` and `dflash`); that cleanup is tracked in [#86](https://github.com/bext1998/DenseX/issues/86).
 
 ## Guides
 
