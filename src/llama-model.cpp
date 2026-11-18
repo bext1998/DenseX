@@ -56,6 +56,28 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
 
 }
 
+// [vocab_only] 只載入詞表時用的空殼模型（issue #82）。llama_model_load() 讀完 load_vocab() 就回傳，
+// 不會呼叫 load_arch_hparams()／load_tensors()／build_arch_graph()，所以這條路徑不需要任何架構專屬的模型類別。
+// 分詞器測試（tests/test-tokenizer-0.cpp）用它載入 models/ggml-vocab-*.gguf，這些檔的 general.architecture
+// 大多是白名單外的架構（連 models/ggml-vocab-qwen35.gguf 標的都是 qwen2），而 vocab 本身與架構無關。
+// 三個 arch 虛擬函式真的被呼叫就代表呼叫端弄錯了：直接拋錯，不要默默回一個空結果。
+struct llama_model_vocab_only : llama_model_base {
+    llama_model_vocab_only(llm_arch arch, const llama_model_params & params) : llama_model_base(params) {
+        // llama_model_base 的 tn 已由建構時的 arch（UNKNOWN）決定；只載入詞表不會用到 tn。
+        this->arch = arch;
+    }
+
+    void load_arch_hparams(llama_model_loader &) override {}
+
+    void load_arch_tensors(llama_model_loader &) override {
+        throw std::runtime_error("vocab-only model has no arch tensors to load");
+    }
+
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params &) const override {
+        throw std::runtime_error("vocab-only model cannot build a compute graph");
+    }
+};
+
 llama_model * llama_model_create(llm_arch arch, const llama_model_params & params) {
     llama_model * model = llama_model_mapping(arch, params);
 
@@ -70,6 +92,13 @@ llama_model * llama_model_create(llm_arch arch, const llama_model_params & param
 }
 
 llama_model * llama_model_create(llama_model_loader & ml, const llama_model_params & params) {
+    if (params.vocab_only) {
+        // 只載入詞表不經過下面的架構白名單（issue #82）：白名單是為了不建置其他架構的模型類別，
+        // vocab_only 用不到任何模型類別，連 general.architecture 不在 enum 裡也不必管。
+        // 完整模型（params.vocab_only == false）照舊走白名單，非 qwen35／dflash 一律拒絕。
+        return new llama_model_vocab_only(ml.get_arch(), params);
+    }
+
     llm_arch arch = ml.get_arch();
     if (arch == LLM_ARCH_UNKNOWN) {
         const std::string arch_name = ml.get_arch_name();

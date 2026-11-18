@@ -1,6 +1,8 @@
 # CPU tests allowlist (issue #76 P0-1): passed in the full run at DenseX/bench/results/cpu_tests/1116-091457,
-# each under 30 s. Excluded-by-design tests (network/model/GPU/python) and the 16 tokenizer tests gated by the
-# DenseX arch whitelist are intentionally absent. Regenerate with run_cpu_tests.ps1 after any change.
+# each under 30 s. Excluded-by-design tests (network/model/GPU/python) are intentionally absent. The tokenizer tests
+# used to be blocked by the DenseX arch whitelist; issue #82 lets vocab-only loads skip it, and test-tokenizer-0-qwen35
+# now passes on CPU (the other 15 tokenizer tests pass too but are not listed here yet).
+# Regenerate with run_cpu_tests.ps1 after any change.
 test-unicode
 test-sampling
 test-reasoning-budget
@@ -38,3 +40,4 @@ test-col2im-1d
 test-conv-1d
 test-gguf
 test-alloc
+test-tokenizer-0-qwen35
