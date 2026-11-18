@@ -49,6 +49,7 @@ DenseX 是給低 VRAM 顯示卡使用的家用稠密模型推論引擎。它從 
 | `docs/densex/rules/TESTING.md` | 建置、測試、量測，以及任何 commit 之前 |
 | `CONTRIBUTING.md` | 工作在本 repo 的流程、授權與致謝（對外文件，英文） |
 | `README.md` | DenseX 是什麼、有哪些開關、怎麼建置（對外文件） |
+| `docs/densex/STRUCTURE.md` | 找資料夾用途、判斷某個目錄 DenseX 會不會改、開關與規則落在哪裡（對內文件，正體中文） |
 
 如果這份 checkout 放在擁有者的私人研究工作區裡，也要遵守工作區的規則：
 - `../../AGENTS.md`（入口）；
