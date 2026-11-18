@@ -105,12 +105,12 @@ DenseX 保留看圖功能（`tools/mtmd/`）。Qwen 3.8 系列附 mmproj 時：
 依改動範圍執行；沒跑的照實寫，不要宣稱通過。
 
 1. **轉檔正確**（有自己轉檔時）：用 `examples/model-conversion` 的工具比對原始 HF 模型與轉出的 GGUF 的 logits。
-2. **輸出正確**：temperature 0、固定 seed，和參考實作或參考路徑比對輸出；改到共用路徑時，用 `bench/ab.py` 對改動前的 build 比對，`exact_match` 必須全部是 true。
+2. **輸出正確**：temperature 0、固定 seed，和參考實作或參考路徑比對輸出；改到共用路徑時，用 `../bench/ab.py` 對改動前的 build 比對（`../` 以 repo 根目錄為基準，同 `docs/densex/rules/TESTING.md`），`exact_match` 必須全部是 true。
 3. **分佈接近**：量化檔跑 KLD 或 perplexity，和同模型的參考檔比較。
 4. **長上下文**：至少跑一次 4K 和 120K，檢查輸出品質與穩定性，不只看速度。
 5. **工具調用**：`toolcall_check.py` 14/14（regress 第 6 層）。
 6. **回歸**：`regress.ps1` 結尾是 `REGRESS_PASS`；改到推測解碼時，DFlash 與 MTP 都跑 `-Full -Long`。不准為了讓測試通過而改 golden 或放寬門檻。
-7. **效能與記憶體**：用 `bench/ab.py` 量 TTFT、prefill、生成速度、VRAM、Shared VRAM，交錯至少 3 輪，報中位數與範圍。目標機器是 12 GB VRAM，要寫出能跑的最大上下文。
+7. **效能與記憶體**：用 `../bench/ab.py` 量 TTFT、prefill、生成速度、VRAM、Shared VRAM，交錯至少 3 輪，報中位數與範圍。目標機器是 12 GB VRAM，要寫出能跑的最大上下文。
 8. **程式風格**：對照 `CODE_STYLE.md` 重新檢查每個改到的檔案，這是和功能測試分開的一輪。
 
 ## commit 之前
