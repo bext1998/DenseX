@@ -2196,6 +2196,16 @@ private:
         // the per-request limit takes priority over the global one
         slot.n_predict_max = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
 
+        // DenseX #77：限制單一請求最多生成多少 token。max_tokens／max_completion_tokens／max_output_tokens
+        // 等別名最後都會變成 task.params.n_predict，所以只需要在這一處夾。夾住不是拒絕：外部客戶端常送很大的 max_tokens，回 400 會讓它們無法使用。
+        // --n-predict-cap -1 表示不限，行為與改動前相同。
+        if (params_base.n_predict_cap >= 0
+                && (slot.n_predict_max == -1 || slot.n_predict_max > params_base.n_predict_cap)) {
+            SLT_INF(slot, "n_predict_max %d -> %d, capped by --n-predict-cap / LLAMA_ARG_N_PREDICT_CAP (#77)\n",
+                    slot.n_predict_max, params_base.n_predict_cap);
+            slot.n_predict_max = params_base.n_predict_cap;
+        }
+
         slot.task = std::make_unique<const server_task>(std::move(task));
 
         slot.state = slot.task->is_child()

@@ -3520,6 +3520,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_SSE_PING_INTERVAL"));
     add_opt(common_arg(
+        {"--n-predict-cap"}, "N",
+        string_format("server-side ceiling on the tokens a single request may generate (n_predict / max_tokens); -1 = no limit (default: %d)", params.n_predict_cap),
+        [](common_params & params, int value) {
+            params.n_predict_cap = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_N_PREDICT_CAP"));
+    add_opt(common_arg(
         {"--threads-http"}, "N",
         string_format("number of threads used to process HTTP requests (default: %d)", params.n_threads_http),
         [](common_params & params, int value) {

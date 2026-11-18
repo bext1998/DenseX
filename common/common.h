@@ -455,6 +455,7 @@ struct ggml_opt_optimizer_params common_opt_lr_pars(void * userdata);
 
 struct common_params {
     int32_t n_predict             =    -1; // max. number of new tokens to predict, -1 == no limit
+    int32_t n_predict_cap         = 65536; // DenseX #77: 單一請求可生成 token 數的 server 端上限（夾住而非拒絕）, -1 == 不設上限
     int32_t n_ctx                 =     0; // context size, 0 == context the model was trained with
     int32_t n_batch               =  2048; // logical batch size for prompt processing (must be >=32 to use BLAS)
     int32_t n_ubatch              =   512; // physical batch size for prompt processing (must be >=32 to use BLAS)
