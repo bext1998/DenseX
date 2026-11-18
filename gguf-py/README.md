@@ -41,7 +41,7 @@ cd /path/to/llama.cpp/gguf-py
 pip install --editable .
 ```
 
-**Note**: This may require to upgrade your Pip installation, with a message saying that editable installation currently requires `setup.py`.
+**Note**: This may require to upgrade your Pip installation, with a message saying that editable installation currently requires a setup.py file (this fork has no setup.py; it is built with `pyproject.toml`).
 In this case, upgrade Pip to the latest:
 
 ```sh

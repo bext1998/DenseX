@@ -16,9 +16,9 @@ When running multiple models on the server (router mode), INI preset files can b
 
 You can push your preset to Hugging Face Hub and share with other users by:
 1. Creating an empty model repository on Hugging Face
-2. Creating a `preset.ini` file in the root directory of the repository
+2. Creating a preset.ini file in the root directory of the repository (this fork ships no preset.ini; use the example below)
 
-Example of a `preset.ini`:
+Example of a preset.ini:
 
 ```ini
 [*]
@@ -59,7 +59,7 @@ llama-cli -hf username/my-preset --temp 0.1
 
 ### Named presets
 
-If you want to define multiple preset configurations for one or more GGUF models, you can create a blank HF repo containing a single `preset.ini` file that references the actual model(s):
+If you want to define multiple preset configurations for one or more GGUF models, you can create a blank HF repo containing a single preset.ini file that references the actual model(s):
 
 ```ini
 [*]
