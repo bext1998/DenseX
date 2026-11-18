@@ -80,6 +80,8 @@ See:
 
 ### DSpark (`draft-dspark`)
 
+> **DenseX:** the engine still has the `draft-dspark` type, but the DenseX conversion allowlist does not accept DSpark drafts (including `--dspark`), so the conversion commands below are refused. DenseX uses DFlash2 drafts; see "Supported models" in `README.md`.
+
 DSpark extends DFlash with a semi-autoregressive _Markov head_: the draft still emits a whole
 block per forward pass, but each block position's logits are biased by a low-rank term keyed on
 the previous token, chained in-graph across the block. This keeps drafting at one decode per

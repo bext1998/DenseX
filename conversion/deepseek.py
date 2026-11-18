@@ -540,7 +540,7 @@ class DeepseekV4Model(TextModel):
             raise ValueError(
                 "DenseX does not support this architecture: DeepSeek-V4 text models convert "
                 "to 'deepseek4', which DenseX no longer loads (issue #86); "
-                "use --dspark for the DFlash2 draft model instead")
+                "see convert_hf_to_gguf.py --print-supported-models for what DenseX converts")
         type(self)._skipped_mtp_tensors = 0
         super().__init__(*args, **kwargs)
 
