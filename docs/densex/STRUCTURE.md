@@ -51,7 +51,7 @@
 | `qwen35.cpp` | Qwen 3.8 主模型（factory 的 `LLM_ARCH_QWEN35`） |
 | `dflash.cpp` | DFlash2 草稿模型（`LLM_ARCH_DFLASH`，`--spec-type draft-dflash`） |
 | `deepseek4.cpp` | **只保留 DFlash 繼承的 graph 基底類別**；本身不是可載入架構（#86 Phase 4） |
-| `delta-net-base.cpp` | GDN（Gated DeltaNet）共用基礎，MTP 草稿路徑用 |
+| `delta-net-base.cpp` | GDN（Gated DeltaNet）層的計算圖基底類別；`qwen35.cpp` 的主模型 graph 繼承它（`models.h:232`） |
 | `models.h` | 以上類別的宣告 |
 
 factory 在 `src/llama-model.cpp:46` 的 `llama_model_mapping()`：只建 `qwen35` 與 `dflash`，其他一律拋 `DenseX only supports qwen35 and dflash architectures, ...`。`src/llama-arch.h` 的 `enum llm_arch` 也只剩 `QWEN35`、`DFLASH`、`UNKNOWN` 三項（#86 Phase 4b＋批 4）。
