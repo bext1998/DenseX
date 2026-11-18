@@ -26,6 +26,7 @@ from gguf.constants import GGUFValueType
 
 # reuse model definitions from the conversion/ package
 from conversion import LazyTorchTensor, ModelBase, get_model_class, ModelType, get_model_architecture
+from conversion.densex_allowlist import require_supported_or_exit
 
 logger = logging.getLogger("lora-to-gguf")
 
@@ -363,14 +364,7 @@ if __name__ == '__main__':
         # output in the same directory as the model by default
         fname_out = dir_lora
 
-    if os.path.exists(input_model):
-        # lazy import load_file only if lora is in safetensors format.
-        from safetensors.torch import load_file
-
-        lora_model = load_file(input_model, device="cpu")
-    else:
-        input_model = os.path.join(dir_lora, "adapter_model.bin")
-        lora_model = torch.load(input_model, map_location="cpu", weights_only=True)
+    # LoRA 權重（adapter_model.safetensors／.bin）延後到白名單通過之後才讀，見下方註解。
 
     # load LoRA config
     with open(lora_config, "r") as f:
@@ -400,6 +394,19 @@ if __name__ == '__main__':
 
     with torch.inference_mode():
         model_arch = get_model_architecture(hparams, ModelType.TEXT)
+        # DenseX 轉檔白名單：套用 LoRA 的基礎模型也必須在名單裡；先檢查再讀任何權重
+        #（AGENTS.md 基本規則 11），不通過就以 exit 1 結束，不印 traceback。
+        require_supported_or_exit(model_arch, mmproj=False, logger=logger)
+
+        if os.path.exists(input_model):
+            # lazy import load_file only if lora is in safetensors format.
+            from safetensors.torch import load_file
+
+            lora_model = load_file(input_model, device="cpu")
+        else:
+            input_model = os.path.join(dir_lora, "adapter_model.bin")
+            lora_model = torch.load(input_model, map_location="cpu", weights_only=True)
+
         try:
             model_class = get_model_class(model_arch)
             logger.info("Using model architecture: %s", model_arch)

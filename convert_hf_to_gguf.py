@@ -21,10 +21,10 @@ from conversion import (
     get_model_architecture,
     get_model_class,
     logger,
-    print_registered_models,
     _mistral_common_installed,
     _mistral_import_error_msg,
 )
+from conversion.densex_allowlist import require_supported_or_exit, supported_models_lines
 
 
 def split_str_to_n_bytes(split_str: str) -> int:
@@ -180,8 +180,9 @@ def main() -> None:
     args = parse_args()
 
     if args.print_supported_models:
-        logger.error("Supported models:")
-        print_registered_models()
+        logger.error("Supported models (DenseX conversion allowlist):")
+        for line in supported_models_lines():
+            logger.error(line)
         sys.exit(0)
 
     if args.verbose:
@@ -235,6 +236,10 @@ def main() -> None:
     logger.info(f"Loading model: {dir_model.name}")
 
     is_mistral_format = args.mistral_format
+    if is_mistral_format:
+        # DenseX 轉檔白名單：mistral 格式沒有 HF architectures 欄位，本來就不在名單裡。
+        # 放在 optional 依賴檢查之前，確保連 config／params 都還沒讀就先擋下（基本規則 11）。
+        require_supported_or_exit("mistral-format", mmproj=args.mmproj, logger=logger)
     if is_mistral_format and not _mistral_common_installed:
         raise ImportError(_mistral_import_error_msg)
     disable_mistral_community_chat_template = args.disable_mistral_community_chat_template
@@ -246,6 +251,8 @@ def main() -> None:
         if not is_mistral_format:
             model_architecture = get_model_architecture(hparams, model_type)
             logger.info(f"Model architecture: {model_architecture}")
+            # DenseX 轉檔白名單：在建立 model class、讀任何權重之前擋下（AGENTS.md 基本規則 11）
+            require_supported_or_exit(model_architecture, mmproj=(model_type == ModelType.MMPROJ), logger=logger)
             try:
                 model_class = get_model_class(model_architecture, mmproj=(model_type == ModelType.MMPROJ))
             except NotImplementedError:
