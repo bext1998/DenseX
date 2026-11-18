@@ -37,7 +37,8 @@
 | `LICENSE`、`AUTHORS` | MIT 授權與作者清單 | **不刪不改** | `AUTHORS` 由 `scripts/gen-authors.sh` 產生 |
 | `CMakeLists.txt`、`CMakePresets.json` | 建置主入口與 preset | 會（小心改） | project 名稱 `llama.cpp` 與公開 target 名稱不動 |
 | `pyproject.toml`、`requirements.txt` | Python 套件設定與依賴 | 會 | `mypy.ini`、`pyrightconfig.json`、`ty.toml` 是 Python 型別檢查設定，路徑都實測存在 |
-| `.editorconfig`、`.clang-format`、`.clang-tidy`、`.flake8`、`.pre-commit-config.yaml`、`.ecrc` | 編輯器與 lint 設定 | 必要時才改 | 有幾個 glob 指向不存在的路徑（`prompts/`、`examples/llama.swiftui/`），見 #86 Phase 7 報告「待決策」 |
+| `convert_hf_to_gguf.py`、`convert_lora_to_gguf.py`、`convert_llama_ggml_to_gguf.py`、`convert_hf_to_gguf_update.py` | 根目錄的 Python 轉檔入口（呼叫 `conversion/` 與 `gguf-py`） | 會（跟著 Qwen 3.8／DFlash 轉檔需求） | 對應 `pyproject.toml` 的 3 個 console script；依賴見 `requirements/` |
+| `.editorconfig`、`.clang-format`、`.clang-tidy`、`.flake8`、`.pre-commit-config.yaml`、`.ecrc`、`.gitignore` | 編輯器、lint 與忽略設定 | 必要時才改 | 有幾個 glob 指向不存在的路徑（`prompts/`、`examples/llama.swiftui/`），見 #86 Phase 7 報告「待決策」 |
 
 **不在 repo 內、但在 repo 上一層**（`docs/densex/rules/TESTING.md` 的 `../` 都是以 repo 根目錄為基準）：`../bench/`（`../bench/regress.ps1`、`../bench/gpu_lock.ps1`、`../bench/run_locked.ps1`、`../bench/ab.py`、鎖檔 `../bench/GPU_BUSY`）、`../build.ps1`（研究工作區的建置包裝）、`../build/`（建置輸出）。
 
