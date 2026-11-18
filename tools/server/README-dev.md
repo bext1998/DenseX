@@ -376,7 +376,7 @@ Routes → Components → Hooks → Stores → Services → Storage/API
 -   **Services** - stateless API/database communication (`ChatService`, `ModelsService`, `PropsService`, `DatabaseService`)
 -   **Hooks** - reusable logic (`useModelChangeValidation`, `useProcessingState`)
 
-For detailed architecture diagrams, see [`tools/ui/docs/`](../ui/docs/):
+For detailed architecture diagrams, see tools/ui/docs/ (upstream only; this fork does not carry that directory):
 
 -   `high-level-architecture.mmd` - full architecture with all modules
 -   `high-level-architecture-simplified.mmd` - simplified overview
@@ -401,6 +401,6 @@ npm run test
 npm run build
 ```
 
-After `public/index.html` has been generated, rebuild `llama-server` as described in the [build](#build) section to include the updated UI.
+After the UI bundle has been generated (upstream path public/index.html; this fork has no public/ directory - its UI dist lives under tools/ui/dist and is embedded by `scripts/ui-assets.cmake`), rebuild `llama-server` as described in the [build](#build) section to include the updated UI.
 
 **Note:** The Vite dev server automatically proxies API requests to `http://localhost:9931`. Make sure `llama-server` is running on that port during development.

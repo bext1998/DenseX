@@ -56,7 +56,7 @@ Due to wide variety of audio generation pipelines, the `mtmd_gen_audio` system i
 
 `mtmd_gen_audio` is split into 2 main API:
 - Core API `mtmd.h`: handles main inference. Important: the API surface must be stateless; caller must handle state management and audio frame accumulation.
-- Helper API `mtmd-helper.h`: provides a model-agnostic stateful API. Usage example can be found in the `tools/tts` directory.
+- Helper API `mtmd-helper.h`: provides a model-agnostic stateful API. Usage example can be found in the tools/tts directory (upstream only; this fork does not carry tools/tts).
 
 ### Checklist for porting new audio generation models to mtmd
 
@@ -66,7 +66,7 @@ Due to wide variety of audio generation pipelines, the `mtmd_gen_audio` system i
 3. For GGUF conversion:
     - Backbone model should be converted to a normal text model (loadable via `libllama`)
         - If model used hard-coded embedding row ID, append them to token embeddings and assign token name for them (see `qwen3tts.py`)
-        - If model have a specific output logits head for audio codes (usually semantic code), keep the head as-is and pad the logits at inference time (see `src/models/qwen3vl.cpp`)
+        - If model have a specific output logits head for audio codes (usually semantic code), keep the head as-is and pad the logits at inference time (see src/models/qwen3vl.cpp - upstream only; this fork removed that file)
     - Sidecar models (code2wav, bigvgan, etc) must live inside the mmproj GGUF (but can be in different `clip_context` if necessary)
         - Note: it should use `ggml_build_forward_select` to select graphs if multiple graphs living in the same context
     - Reuse existing GGUF metadata key name and tensor name whenever possible; think twice before adding extensive changes to GGUF writer. For example, Qwen3-TTS hard-code part of the hparams to `clip.cpp` as they won't likely to change.
@@ -83,7 +83,7 @@ Due to wide variety of audio generation pipelines, the `mtmd_gen_audio` system i
     - 60% changes inside `mtmd-helper-gen.cpp`
     - 10% changes inside `libmtmd` and `clip.cpp` systems
     - The rest downstream code (CLI, server) should have no changes at all
-5. Update usage documentation in `tools/tts/README.md`
+5. Update usage documentation in tools/tts/README.md (upstream only; not carried into this fork)
 
 IMPORTANT: If your model needs changes that don't fit the existing infrastructure, **open an issue first for discussion**.
 

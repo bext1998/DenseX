@@ -764,7 +764,7 @@ Returns a JSON object with a field `prompt` containing a string of the input mes
 >
 > This endpoint is **not** OAI-compatible. For OAI-compatible client, use `/v1/embeddings` instead.
 
-The same as [the embedding example](../embedding) does.
+The same as the embedding example does. (Upstream tools/embedding is not carried into this fork; this tree ships [examples/embedding](../../examples/embedding) instead.)
 
 This endpoint also supports multimodal embeddings. See the documentation for the `/completions` endpoint for details on how to send a multimodal prompt.
 
@@ -2325,14 +2325,14 @@ Note that the following endpoints are exempt from being considered as incoming t
 
 ### Interactive mode
 
-Check the sample in [chat.mjs](chat.mjs).
+Check the sample in chat.mjs (upstream sample file, not carried into this fork).
 Run with NodeJS version 16 or later:
 
 ```sh
 node chat.mjs
 ```
 
-Another sample in [chat.sh](chat.sh).
+Another sample in chat.sh (upstream sample file, not carried into this fork).
 Requires [bash](https://www.gnu.org/software/bash/), [curl](https://curl.se) and [jq](https://jqlang.github.io/jq/).
 Run with bash:
 
@@ -2376,4 +2376,4 @@ You can specify default preferences for the web UI using `--ui-config <JSON conf
 
 > **Note:** The old flags `--webui-config` and `--webui-config-file` are deprecated but still work as aliases.
 
-You may find available preferences in [settings-keys.ts](../ui/src/lib/constants/settings-keys.ts).
+You may find available preferences in [settings-keys.constants.ts](../ui/src/lib/constants/settings-keys.constants.ts).

@@ -204,7 +204,7 @@ Here is also a list of known limitations (contributions welcome):
 
 - `additionalProperties` defaults to `false` (produces faster grammars + reduces hallucinations).
 - `"additionalProperties": true` may produce keys that contain unescaped newlines.
-- Unsupported features are skipped silently. It is currently advised to use the command-line Python converter (see above) to see any warnings, and to inspect the resulting grammar / test it w/ [llama-gbnf-validator](../examples/gbnf-validator/gbnf-validator.cpp).
+- Unsupported features are skipped silently. It is currently advised to use the command-line Python converter (see above) to see any warnings, and to inspect the resulting grammar / test it w/ llama-gbnf-validator (upstream only: ../examples/gbnf-validator/gbnf-validator.cpp is not carried into this fork; use [tests/test-gbnf-validator.cpp](../tests/test-gbnf-validator.cpp) instead).
 - Can't mix `properties` w/ `anyOf` / `oneOf` in the same type (https://github.com/ggml-org/llama.cpp/issues/7703)
 - [prefixItems](https://json-schema.org/draft/2020-12/json-schema-core#name-prefixitems) is broken (but [items](https://json-schema.org/draft/2020-12/json-schema-core#name-items) works)
 - `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum`: only supported for `"type": "integer"` for now, not `number`

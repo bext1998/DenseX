@@ -34,7 +34,7 @@ python ./tools/mtmd/glmedge-surgery.py -m ../model_path
 python ./tools/mtmd/glmedge-convert-image-encoder-to-gguf.py -m ../model_path --llava-projector ../model_path/glm.projector --output-dir ../model_path
 ```
 
-5. Use `examples/convert_hf_to_gguf.py` to convert the LLM part of GLMV-EDGE to GGUF:
+5. Use `convert_hf_to_gguf.py` (at the repository root in this fork; upstream kept it under examples/) to convert the LLM part of GLMV-EDGE to GGUF:
 
 ```sh
 python convert_hf_to_gguf.py ../model_path

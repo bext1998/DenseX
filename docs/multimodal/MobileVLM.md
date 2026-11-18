@@ -69,14 +69,14 @@ Now both the LLaMA part and the image encoder is in the `MobileVLM-1.7B` directo
 
 ## Android compile and run
 ### compile
-refer to `tools/mtmd/android/build_64.sh`
+refer to tools/mtmd/android/build_64.sh (upstream only; this fork does not carry an android build script)
 ```sh
 mkdir tools/mtmd/android/build_64
 cd tools/mtmd/android/build_64
 ../build_64.sh
 ```
 ### run on Android
-refer to `android/adb_run.sh`, modify resources' `name` and `path`
+refer to android/adb_run.sh (upstream only; not carried into this fork), modify resources' `name` and `path`
 
 ## Some result on Android with `Snapdragon 888` chip
 ### case 1

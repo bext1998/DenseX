@@ -439,9 +439,9 @@ Each returned parser is wrapped by `wrap_for_generation_prompt()`, which prepend
 | `common/chat-auto-parser.h`               | All analysis structs, enums, `autoparser`, `peg_generator`, `generation_params` |
 | `common/chat-auto-parser-generator.cpp`   | Parser generator: `generate_parser()` and `build_parser()` methods              |
 | `common/chat-diff-analyzer.cpp`           | Differential analysis implementation and workarounds                            |
-| `common/chat-auto-parser-helpers.h/cpp`   | `calculate_diff_split()`, `segmentize_markers()`, `compare_variants()`,         |
+| `common/chat-auto-parser-helpers.h` / `.cpp` | `calculate_diff_split()`, `segmentize_markers()`, `compare_variants()`,      |
 |                                           | `wrap_for_generation_prompt()`, string helpers                                  |
-| `common/chat-peg-parser.h/cpp`            | `common_chat_peg_builder`, `common_chat_peg_mapper`, and helpers                |
+| `common/chat-peg-parser.h` / `.cpp`       | `common_chat_peg_builder`, `common_chat_peg_mapper`, and helpers                |
 | `common/chat.cpp`                         | Entry point: `common_chat_templates_apply_jinja()`                              |
 | `tests/test-chat-auto-parser.cpp`         | Auto-parser unit tests; also a debug tool when given a template path            |
 | `tests/test-chat-analysis.cpp`            | Template differential analysis debug tool                                       |
