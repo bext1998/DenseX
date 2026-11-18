@@ -14,7 +14,7 @@
 | `benches/` | 上游在別台機器做的歷史量測（`dgx-spark/`、`mac-m2-ultra/`、`nemotron/`），不在任何 `add_subdirectory` 裡 | 不改、不當本機基準 | `.editorconfig` 的 `[benches/**]` 排除格式；量測一律用 `../bench/` 的腳本 |
 | `cmake/` | 建置輔助：`cmake/build-info.cmake`、`cmake/llama-config.cmake.in`、`cmake/llama.pc.in`、`cmake/license.cmake`、toolchain（`cmake/x64-windows-llvm.cmake` 等） | 必要時才改 | `CMakePresets.json` 的 `CMAKE_TOOLCHAIN_FILE` 都指向這裡 |
 | `common/` | `llama-common` 共用庫：參數解析（`arg.cpp`）、chat／jinja、speculative、sampler | 會 | 改到工具調用要過 14/14（AGENTS 基本規則 6） |
-| `conversion/` | HF→GGUF 的 Python 轉檔器與註冊表 | 只維護 Qwen 3.8／DFlash 用得到的部分 | 見下方「conversion/」 |
+| `conversion/` | HF→GGUF 的 Python 轉檔器與註冊表 | 只維護 Qwen 3.8／DFlash 用得到的部分 | **轉檔白名單** `conversion/densex_allowlist.py`，改它要走 `AGENTS.md` 基本規則 11；見下方「conversion/」 |
 | `docs/` | 文件：`docs/densex/` 是 DenseX 自己的，其餘是上游文件 | `docs/densex/` 會；其餘只修失效引用 | 見下方「docs/」 |
 | `examples/` | 示範程式＋被根目錄轉檔器依賴的 Python 工具（`examples/convert_legacy_llama.py`、`examples/model-conversion/`、`examples/pydantic_models_to_grammar*.py`） | 不改 | `LLAMA_BUILD_EXAMPLES` **預設 OFF**（#86 P3.1 改的，DenseX 獨有） |
 | `ggml/` | 張量庫與 backend，只剩 `ggml-cpu`、`ggml-cuda` 兩個 backend 目錄 | #86 不改這裡 | 註解一律英文 ASCII（`docs/densex/rules/CODE_STYLE.md`）；改到 `ggml-cuda/` 要跑 `../bench/sanitize.ps1` |
@@ -74,10 +74,10 @@ factory 在 `src/llama-model.cpp:46` 的 `llama_model_mapping()`：只建 `qwen3
 
 ### `conversion/`
 
-100 個 Python 檔（`find conversion -type f -not -path "*__pycache__*"`，2026-11-18）。分兩類：
+101 個 Python 檔（`ls conversion/*.py`，2026-11-18）。分兩類：
 
-- **DenseX 維護**：`conversion/base.py`、`conversion/qwen.py`（Qwen 3.8）、`conversion/deepseek.py` 的 DFlash／DSpark 路徑、`conversion/minicpm.py` 的 dense 文字分支。
-- **上游留下、DenseX 不維護但保留**：其餘 80 多個架構的轉檔類別（`conversion/llama.py`、`conversion/falcon.py`、`conversion/gemma.py`、`conversion/qwen4exp.py`…）與 `conversion/__init__.py` 的 `TEXT_MODEL_MAP` 註冊表。這些類別會寫出**引擎拒載**的 GGUF；#86 Phase 4b5 只在兩條已知路徑攔截（`conversion/minicpm.py` 的 MoE 文字變體、`conversion/deepseek.py` 的 DeepSeek-V4），其餘路徑沒攔，是已知的待決策。
+- **DenseX 維護**：`conversion/densex_allowlist.py`（**轉檔白名單，DenseX 支援範圍的唯一來源**，檔頭寫明改它要走 `AGENTS.md` 基本規則 11）、`conversion/base.py`、`conversion/qwen.py`（Qwen 3.8 主模型與 DFlash draft）、`conversion/deepseek.py` 的 DSpark 路徑、`conversion/minicpm.py` 的 dense 文字分支。
+- **上游留下、DenseX 不維護但保留**：其餘 80 多個架構的轉檔類別（`conversion/llama.py`、`conversion/falcon.py`、`conversion/gemma.py`、`conversion/qwen4exp.py`…）與 `conversion/__init__.py` 的 `TEXT_MODEL_MAP` 註冊表。這些類別本來會寫出**引擎拒載**的 GGUF，現在不會真的轉出來：兩個入口（`convert_hf_to_gguf.py`、`convert_lora_to_gguf.py`）在建立 model class、讀任何權重之前就用白名單擋下，訊息以 `densex-convert:` 開頭、exit 1、不印 traceback，`--print-supported-models` 也只列白名單（#86 轉檔白名單）。要收進白名單必須走重新審議。#86 Phase 4b5 的兩個類別內攔截（`conversion/minicpm.py` 的 MoE 文字變體、`conversion/deepseek.py` 的 DeepSeek-V4）保留，當作直接呼叫類別時的第二道。
 
 ### `tests/`
 

@@ -52,6 +52,20 @@ Peak VRAM 11857 MiB. At 120K, generation is 13% slower than at 4K.
 
 Every change is described, with its measurement, in the commit message (`git log`).
 
+## Supported models
+
+DenseX runs **dense Qwen 3.8 models only**, plus their `dflash` draft models and the matching vision projector:
+
+| Role | HuggingFace architecture names | Used as |
+|---|---|---|
+| Main model (writes `qwen35`) | `Qwen3_5ForCausalLM`, `Qwen3_5ForConditionalGeneration`, `Qwen3_5TextModel` | `-m <model.gguf>` |
+| Draft model (writes `dflash`) | `DFlashDraftModel`, `DFlash2DraftModel` | `-md <draft.gguf>` with `--spec-type draft-dflash` |
+| Vision projector (writes `clip`) | `Qwen3_5ForConditionalGeneration` | `--mmproj <mmproj.gguf>` |
+
+Qwen 3.8 checkpoints report these `Qwen3_5*` names in their model config; the product name does not change them. Anything else is refused twice: `convert_hf_to_gguf.py` and `convert_lora_to_gguf.py` stop at conversion time - with a `densex-convert:` message, before any weight is read, and LoRA only for the main-model and draft names above - and the loader refuses the same checkpoint again at load time. `convert_hf_to_gguf.py --print-supported-models` prints exactly this list.
+
+Widening the scope is an owner decision, not an implementation detail: open an issue saying what should be supported and why, the expected maintenance cost, and the effect on accuracy, stability and VRAM, then follow the re-approval flow in `AGENTS.md` base rule 11. The conversion allowlist, the loader, this document and the tests change together, in one change, with full verification.
+
 ## Build (Windows, CUDA)
 
 Requirements: Visual Studio 2022 (C++ tools), CUDA Toolkit 13.0, CMake, Ninja.
