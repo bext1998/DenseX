@@ -242,6 +242,19 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     set(MODEL_DIR "${CMAKE_CURRENT_BINARY_DIR}/test-models/")
     file(MAKE_DIRECTORY "${MODEL_DIR}")
 
+    # DenseX（#82 疑點 4）：test-generate-models 只寫不刪，MODEL_DIR 又是共用的建置輸出目錄，所以架構清單縮小後
+    # （#86 phase 4 移除 qwen35moe）上一輪留下的 *.gguf 會一直留在這裡；test-llama-context 會載入 MODEL_DIR 下
+    # 所有的 *.gguf（tests/test-llama-context.cpp:88 collect_models），碰到已不再支援的架構就永久失敗。
+    # 設定階段先清掉舊的 *.gguf，讓每次 ctest 都從乾淨的目錄開始；只刪 *.gguf，不動目錄本身。
+    # 限制：只在 CMake 重新設定時清理。本專案跑 CPU 測試一律經 bench/run_cpu_tests.ps1（regress.ps1 的 CPU 那一層
+    # 也走同一支），它每次都重新 configure，所以實務路徑已涵蓋；手動只跑 ctest 不會清。
+    file(GLOB DENSEX_STALE_TEST_MODELS "${MODEL_DIR}*.gguf")
+    if (DENSEX_STALE_TEST_MODELS)
+        list(LENGTH DENSEX_STALE_TEST_MODELS DENSEX_STALE_TEST_MODELS_COUNT)
+        message(STATUS "test-models: removing ${DENSEX_STALE_TEST_MODELS_COUNT} stale .gguf file(s) left by earlier runs")
+        file(REMOVE ${DENSEX_STALE_TEST_MODELS})
+    endif()
+
     llama_test(
         test-llama-archs
         NAME test-generate-models
