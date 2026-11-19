@@ -44,6 +44,7 @@ try {
         & (Join-Path $vs 'Common7/Tools/Launch-VsDevShell.ps1') -Arch amd64 -HostArch amd64 -SkipAutomaticLocation | Out-Null
     }
     $env:PATH = "$CudaPath/bin;$CudaPath/bin/x64;$env:PATH"
+    . (Join-Path $PSScriptRoot 'cl-deps-guard.ps1'); Assert-ClDepsPrefix $build   # 標頭相依防呆，見該檔
     Log "build dir: $build; concurrent: $Concurrent"
     Log "UI source build: $UI; prebuilt download: off; when UI is off, existing source/build dist assets may still be embedded"
     Log "commit: $(git -C $src rev-parse HEAD); dirty files: $((git -C $src status --short) -join ', ')"
