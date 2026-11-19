@@ -328,6 +328,11 @@ hf_files get_repo_files(const std::string & repo_id,
                 continue;
             }
 
+            // DenseX：LFS 的 oid 就是內容 SHA-256，交給下載器在完成前核對。
+            if (item.contains("lfs") && item["lfs"].is_object() && is_hex_string(file.oid, 64)) {
+                file.sha256 = file.oid;
+            }
+
             file.url = endpoint + repo_id + "/resolve/" + commit + "/" + file.path;
 
             fs::path final_path = commit_path / subpath;

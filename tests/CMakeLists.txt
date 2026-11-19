@@ -387,3 +387,15 @@ if (TARGET gguf-model-data)
     target_link_libraries(test-export-graph-ops PRIVATE gguf-model-data)
     target_compile_definitions(test-export-graph-ops PRIVATE LLAMA_HF_FETCH)
 endif()
+
+# DenseX：下載續傳與完整性（issue #78）。C++ 驅動程式連到 Python 腳本啟動的 loopback
+# http.server mock；沒有 Python 時只建置驅動程式，不註冊 ctest。
+llama_build(test-download-resume.cpp)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if (Python3_Interpreter_FOUND)
+    add_test(
+        NAME test-download-resume
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-download-resume.py $<TARGET_FILE:test-download-resume>
+    )
+    set_tests_properties(test-download-resume PROPERTIES LABELS "main")
+endif()

@@ -54,6 +54,8 @@ struct common_cached_model_info {
 struct common_download_opts {
     std::string bearer_token;
     common_header_list headers;
+    // DenseX：來源保證的完成檔 SHA-256（HF LFS oid、OCI blob digest）。留空表示只能驗證大小與 Content-Range。
+    std::string expected_sha256;
     bool offline = false;
     bool download_mmproj  = false;
     bool download_mtp     = false;
@@ -73,7 +75,12 @@ struct common_download_task {
     common_download_task(hf_cache::hf_file f,
             const common_download_opts & opts,
             std::function<void()> on_done = nullptr)
-        : opts(opts), url(f.url), local_path(f.local_path), on_done(on_done), is_hf(true) {}
+        : opts(opts), url(f.url), local_path(f.local_path), on_done(on_done), is_hf(true) {
+        // DenseX：HF LFS 的 oid 是檔案內容的 SHA-256，非 LFS 檔案的 oid 是 Git blob SHA-1，不能混用。
+        if (!f.sha256.empty()) {
+            this->opts.expected_sha256 = f.sha256;
+        }
+    }
 };
 
 void common_download_run_tasks(const std::vector<common_download_task> & tasks);

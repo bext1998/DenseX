@@ -13,6 +13,8 @@ struct hf_file {
     std::string local_path;
     std::string final_path;
     std::string oid;
+    // DenseX：只有 HF LFS 的 oid（64 hex）是內容 SHA-256；Git blob oid 是 SHA-1，不填這裡。
+    std::string sha256;
     std::string repo_id;
 };
 
