@@ -69,11 +69,21 @@ extern "C" {
 
     struct gguf_context;
 
+    // DenseX: default total metadata budget used when max_metadata_size is 0.
+    // Metadata is the header, all key/value pairs and all tensor info; it does
+    // not include the tensor data blob. The official 27B model and the dflash
+    // drafts need about 26 MiB, so 256 MiB leaves an order of magnitude of room.
+#define GGUF_DEFAULT_MAX_METADATA_SIZE (256ull * 1024 * 1024)
+
     struct gguf_init_params {
         bool no_alloc;
 
         // if not NULL, create a ggml_context and allocate the tensor data in it
         struct ggml_context ** ctx;
+
+        // DenseX: total bytes of metadata allowed while parsing. 0 uses
+        // GGUF_DEFAULT_MAX_METADATA_SIZE, SIZE_MAX disables the limit.
+        size_t max_metadata_size;
     };
 
     // callback to simulate or wrap a FILE pointer - read up to `len` bytes at `offset` into `output` and return the number of bytes read

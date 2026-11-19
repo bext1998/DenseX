@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #define GGUF_MAX_STRING_LENGTH  (1024*1024*1024)
@@ -170,6 +171,13 @@ struct gguf_kv {
         data_string = value;
     }
 
+    // DenseX: take ownership of a parsed string array instead of copying it twice.
+    gguf_kv(const std::string & key, std::vector<std::string> && value)
+            : key(key), is_array(true), type(GGUF_TYPE_STRING) {
+        GGML_ASSERT(!key.empty());
+        data_string = std::move(value);
+    }
+
     const std::string & get_key() const {
         return key;
     }
@@ -245,6 +253,33 @@ struct gguf_reader {
         GGML_ASSERT(max_chunk_read > 0);
     }
 
+    // DenseX: parse budget for the metadata section, counted as bytes read plus the
+    // per-element std::string objects of string arrays. 0 means unlimited.
+    void set_metadata_limit(uint64_t limit) const {
+        metadata_limit = limit;
+        metadata_cost = 0;
+        metadata_limit_logged = false;
+    }
+
+    void clear_metadata_limit() const {
+        metadata_limit = 0;
+    }
+
+    bool metadata_charge(uint64_t bytes) const {
+        if (metadata_limit == 0) {
+            return true;
+        }
+        if (bytes > metadata_limit || metadata_cost > metadata_limit - bytes) {
+            if (!metadata_limit_logged) {
+                metadata_limit_logged = true;
+                GGML_LOG_ERROR("gguf: metadata exceeds the configured limit of %" PRIu64 " bytes\n", metadata_limit);
+            }
+            return false;
+        }
+        metadata_cost += bytes;
+        return true;
+    }
+
     // helper for remaining bytes in a file
     static uint64_t file_remain(FILE * file) {
         const int64_t cur = gguf_ftell(file);
@@ -280,6 +315,14 @@ struct gguf_reader {
         if (n > GGUF_MAX_ARRAY_ELEMENTS) {
             return false;
         }
+        if (n > SIZE_MAX / sizeof(T)) {
+            return false;
+        }
+        // DenseX: charge the vector allocation before resize(), so a declared array
+        // still has to fit the metadata budget even if the file is not read yet.
+        if (!metadata_charge(uint64_t(n) * sizeof(T))) {
+            return false;
+        }
         if constexpr (std::is_same<T, std::string>::value) {
             // strings are prefixed with their length, so we need to account for that
             if (n > SIZE_MAX / sizeof(uint64_t)) {
@@ -289,9 +332,6 @@ struct gguf_reader {
                 return false;
             }
         } else {
-            if (n > SIZE_MAX / sizeof(T)) {
-                return false;
-            }
             if (nbytes_remain < n * sizeof(T)) {
                 return false;
             }
@@ -390,6 +430,10 @@ private:
         if (callback == nullptr || size == 0) {
             return 0;
         }
+        // DenseX: stop before reading past the metadata budget.
+        if (!metadata_charge(size)) {
+            return 0;
+        }
 
         uint8_t * data = static_cast<uint8_t *>(dst);
         size_t total_nread = 0;
@@ -425,6 +469,9 @@ private:
     uint64_t start_offset = 0;
     mutable uint64_t data_offset = 0;
     mutable uint64_t nbytes_remain = 0;
+    mutable uint64_t metadata_limit = 0;
+    mutable uint64_t metadata_cost = 0;
+    mutable bool metadata_limit_logged = false;
 };
 
 struct gguf_context * gguf_init_empty(void) {
@@ -446,19 +493,23 @@ bool gguf_read_emplace_helper(const struct gguf_reader & gr, std::vector<struct 
             GGML_LOG_ERROR("%s: encountered bad_alloc error while reading value for key '%s'\n", __func__, key.c_str());
             return false;
         }
-        kv.emplace_back(key, value);
+        kv.emplace_back(key, std::move(value));
     } else {
         T value;
         if (!gr.read(value)) {
             return false;
         }
-        kv.emplace_back(key, value);
+        kv.emplace_back(key, std::move(value));
     }
     return true;
 }
 
 static struct gguf_context * gguf_init_from_reader(const struct gguf_reader & gr, struct gguf_init_params params) {
     struct gguf_context * ctx = new gguf_context;
+
+    // DenseX: cap the total metadata before parsing the header or any KV pair.
+    const size_t max_metadata = params.max_metadata_size == 0 ? GGUF_DEFAULT_MAX_METADATA_SIZE : params.max_metadata_size;
+    gr.set_metadata_limit(max_metadata == SIZE_MAX ? 0 : uint64_t(max_metadata));
 
     bool ok = true;
 
@@ -776,6 +827,9 @@ static struct gguf_context * gguf_init_from_reader(const struct gguf_reader & gr
         return nullptr;
     }
     GGML_ASSERT(int64_t(ctx->info.size()) == n_tensors);
+
+    // DenseX: alignment padding and the tensor data blob are not metadata.
+    gr.clear_metadata_limit();
 
     // we require the data section to be aligned, so take into account any padding
     if (n_tensors > 0 && !gr.seek(gr.start() + GGML_PAD(gr.tell() - gr.start(), ctx->alignment))) {
