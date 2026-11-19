@@ -195,7 +195,12 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
     add((new field_num("seed", params.sampling.seed))
         ->set_desc("Set the random number generator (RNG) seed (-1 = random)"));
 
+    // DenseX #77：補下限 0（上限依 #77 的決定維持 INT32_MAX，不設）。沒有 hard limit 時 field_num 只是把值夾在
+    // min..max，而 min 預設是 INT32_MIN，所以負值原封不動進 sampling.n_probs：回報機率的判斷一律是 n_probs > 0
+    // （server-context.cpp:2154、2468、5204），負值變成「有要求但拿不到」；而 n_probs == 0 的 greedy 快速判斷
+    // （server-context.cpp:97、common/sampling.cpp:403）也會被繞過，白費效能。負值現在直接回 400。
     add((new field_num("n_probs", params.sampling.n_probs))
+        ->set_hard_limits(0, INT32_MAX)
         ->add_alias("logprobs") // use "logprobs" if "n_probs" wasn't provided
         ->set_desc("If greater than 0, output the probabilities of top N tokens for each generated token"));
 
