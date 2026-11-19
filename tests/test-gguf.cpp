@@ -5,9 +5,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cinttypes>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <random>
 #include <string>
 #include <vector>
@@ -32,6 +34,7 @@ enum handcrafted_file_type {
     HANDCRAFTED_KV_DUPLICATE_KEY           =  40 + offset_has_kv,
     HANDCRAFTED_KV_BAD_ALIGN               =  50 + offset_has_kv,
     HANDCRAFTED_KV_WRONG_TYPE_ALIGN        =  55 + offset_has_kv,
+    HANDCRAFTED_KV_METADATA_TOO_LARGE      =  60 + offset_has_kv,
     HANDCRAFTED_KV_SUCCESS                 = 800 + offset_has_kv,
 
     HANDCRAFTED_TENSORS_BAD_NAME_SIZE      =  10 + offset_has_tensors,
@@ -73,6 +76,7 @@ static std::string handcrafted_file_type_name(const enum handcrafted_file_type h
         case HANDCRAFTED_KV_DUPLICATE_KEY:           return "KV_DUPLICATE_KEY";
         case HANDCRAFTED_KV_BAD_ALIGN:               return "KV_BAD_ALIGN";
         case HANDCRAFTED_KV_WRONG_TYPE_ALIGN:        return "KV_WRONG_TYPE_ALIGN";
+        case HANDCRAFTED_KV_METADATA_TOO_LARGE:      return "KV_METADATA_TOO_LARGE";
         case HANDCRAFTED_KV_SUCCESS:                 return "KV_RANDOM_KV";
 
         case HANDCRAFTED_TENSORS_BAD_NAME_SIZE:      return "TENSORS_BAD_NAME_SIZE";
@@ -270,6 +274,11 @@ static FILE * get_handcrafted_file(const unsigned int seed, const enum handcraft
     std::vector<std::pair<enum gguf_type, enum gguf_type>> kv_types;
     if (hft >= offset_has_kv) {
         kv_types = get_kv_types(rng);
+        if (hft == HANDCRAFTED_KV_METADATA_TOO_LARGE) {
+            // 只留一個字串陣列；內容在下面用 1000 個單字元字串製造 metadata 放大。
+            kv_types.clear();
+            kv_types.push_back(std::make_pair(GGUF_TYPE_ARRAY, GGUF_TYPE_STRING));
+        }
     }
     {
         uint64_t n_kv = kv_types.size();
@@ -318,6 +327,21 @@ static FILE * get_handcrafted_file(const unsigned int seed, const enum handcraft
         {
             const int32_t type32 = int32_t(type);
             helper_write(file, type32);
+        }
+
+        if (hft == HANDCRAFTED_KV_METADATA_TOO_LARGE) {
+            // 1000 個單字元字串：檔案不到 10 KB，但 1000 個 std::string 物件
+            // 會讓 metadata 成本超過測試設定的 4 KB 上限。
+            const int32_t type_arr32 = int32_t(GGUF_TYPE_STRING);
+            helper_write(file, type_arr32);
+            const uint64_t nstr = 1000;
+            helper_write(file, nstr);
+            for (uint64_t istr = 0; istr < nstr; ++istr) {
+                const uint64_t n = 1;
+                helper_write(file, n);
+                helper_write(file, "x", 1);
+            }
+            continue;
         }
 
         uint32_t data[16];
@@ -775,6 +799,7 @@ static std::pair<int, int> test_handcrafted_file(const unsigned int seed) {
         HANDCRAFTED_KV_DUPLICATE_KEY,
         HANDCRAFTED_KV_BAD_ALIGN,
         HANDCRAFTED_KV_WRONG_TYPE_ALIGN,
+        HANDCRAFTED_KV_METADATA_TOO_LARGE,
         HANDCRAFTED_KV_SUCCESS,
 
         HANDCRAFTED_TENSORS_BAD_NAME_SIZE,
@@ -818,6 +843,7 @@ static std::pair<int, int> test_handcrafted_file(const unsigned int seed) {
         struct gguf_init_params gguf_params = {
             /*no_alloc =*/ false,
             /*ctx      =*/ hft >= offset_has_data ? &ctx : nullptr,
+            /*max_metadata_size =*/ hft == HANDCRAFTED_KV_METADATA_TOO_LARGE ? 4096 : 0,
         };
 
         struct gguf_context * gguf_ctx = gguf_init_from_file_ptr(file, gguf_params);
@@ -834,6 +860,28 @@ static std::pair<int, int> test_handcrafted_file(const unsigned int seed) {
             printf("\033[1;31mFAIL\033[0m\n");
         }
         ntest++;
+
+        // 對照組：同一個檔案在不設上限時必須載入成功，證明失敗來自上限而不是壞檔。
+        if (hft == HANDCRAFTED_KV_METADATA_TOO_LARGE) {
+            printf("%s:   - metadata_limit_is_the_cause: ", __func__);
+            rewind(file);
+            struct gguf_init_params unlimited_params = {
+                /*no_alloc =*/ false,
+                /*ctx      =*/ nullptr,
+                /*max_metadata_size =*/ SIZE_MAX,
+            };
+            struct gguf_context * gguf_unlimited = gguf_init_from_file_ptr(file, unlimited_params);
+            if (gguf_unlimited && gguf_get_n_kv(gguf_unlimited) == 1) {
+                printf("\033[1;32mOK\033[0m\n");
+                npass++;
+            } else {
+                printf("\033[1;31mFAIL\033[0m\n");
+            }
+            ntest++;
+            if (gguf_unlimited) {
+                gguf_free(gguf_unlimited);
+            }
+        }
 
         if (hft >= offset_has_data && !expect_context_not_null(hft)) {
             printf("%s:   - no_dangling_ggml_context_pointer: ", __func__);
@@ -1438,10 +1486,33 @@ static std::pair<int, int> test_gguf_set_kv(ggml_backend_dev_t dev, const unsign
 
 static void print_usage() {
     printf("usage: test-gguf [seed]\n");
+    printf("       test-gguf --metadata <file.gguf>\n");
     printf("  if no seed is unspecified then a random seed is used\n");
 }
 
+// 只讀標頭與 metadata，不建立 tensor、不讀張量資料；用來確認正式模型在
+// metadata 總量上限的預設值下仍可載入。
+static int inspect_metadata(const char * path) {
+    struct gguf_init_params params = {
+        /*no_alloc =*/ true,
+        /*ctx      =*/ nullptr,
+        /*max_metadata_size =*/ 0,
+    };
+    struct gguf_context * ctx = gguf_init_from_file(path, params);
+    if (!ctx) {
+        printf("FAIL: %s\n", path);
+        return 1;
+    }
+    printf("OK: %s version=%u n_kv=%" PRIi64 " n_tensors=%" PRIi64 " data_offset=%zu\n",
+           path, gguf_get_version(ctx), gguf_get_n_kv(ctx), gguf_get_n_tensors(ctx), gguf_get_data_offset(ctx));
+    gguf_free(ctx);
+    return 0;
+}
+
 int main(int argc, char ** argv) {
+    if (argc == 3 && std::strcmp(argv[1], "--metadata") == 0) {
+        return inspect_metadata(argv[2]);
+    }
     if (argc > 2) {
         print_usage();
         return 1;

@@ -8,6 +8,9 @@
 #include "json.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -38,6 +41,333 @@
 //
 // downloader
 //
+
+// DenseX：只有證明暫存檔與遠端物件是同一版本時才能續傳。sidecar 把驗證器與可信
+// 摘要存在 <path>.downloadInProgress 旁邊。
+struct download_meta {
+    int         version = 1;
+    std::string url;
+    std::string etag;
+    std::string last_modified;
+    std::string sha256;
+    size_t      size = 0;
+};
+
+static void download_meta_save(const std::string & path, const download_meta & m) {
+    const std::string data =
+        "version=1\n"
+        "url=" + m.url + "\n" +
+        "etag=" + m.etag + "\n" +
+        "last-modified=" + m.last_modified + "\n" +
+        "size=" + std::to_string(m.size) + "\n" +
+        "sha256=" + m.sha256 + "\n";
+    try {
+        fs_write_atomic(std::filesystem::u8path(path), data);
+    } catch (const std::exception & e) {
+        LOG_WRN("%s: could not save resume metadata %s: %s\n", __func__, path.c_str(), e.what());
+    }
+}
+
+static bool download_meta_load(const std::string & path, download_meta & m) {
+    std::ifstream in(std::filesystem::u8path(path), std::ios::binary);
+    if (!in) {
+        return false;
+    }
+    download_meta out;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) {
+            continue;
+        }
+        const std::string key   = line.substr(0, eq);
+        const std::string value = line.substr(eq + 1);
+        if (key == "version") {
+            try {
+                out.version = std::stoi(value);
+            } catch (const std::exception &) {
+                return false;
+            }
+        } else if (key == "url") {
+            out.url = value;
+        } else if (key == "etag") {
+            out.etag = value;
+        } else if (key == "last-modified") {
+            out.last_modified = value;
+        } else if (key == "size") {
+            try {
+                out.size = (size_t) std::stoull(value);
+            } catch (const std::exception &) {
+                return false;
+            }
+        } else if (key == "sha256") {
+            out.sha256 = value;
+        }
+    }
+    if (out.version != 1) {
+        return false;
+    }
+    m = std::move(out);
+    return true;
+}
+
+// DenseX：只有明確標示 SHA-256 的標頭才可信。一般 ETag 不行：HF Xet repo 送的是
+// 64 hex 的 xet hash，Git blob 是 40 hex 的 SHA-1，兩者都不是檔案內容的 SHA-256。
+static bool is_sha256_hex(const std::string & s) {
+    if (s.size() != 64) {
+        return false;
+    }
+    for (const char c : s) {
+        if (!std::isxdigit((unsigned char) c)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static std::string normalize_sha256(std::string value) {
+    while (!value.empty() && (value.front() == '"' || value.front() == '\'' || std::isspace((unsigned char) value.front()))) {
+        value.erase(value.begin());
+    }
+    while (!value.empty() && (value.back() == '"' || value.back() == '\'' || std::isspace((unsigned char) value.back()))) {
+        value.pop_back();
+    }
+    static const std::string prefix = "sha256:";
+    if (value.size() > prefix.size() && value.compare(0, prefix.size(), prefix) == 0) {
+        value = value.substr(prefix.size());
+    }
+    for (char & c : value) {
+        c = (char) std::tolower((unsigned char) c);
+    }
+    return is_sha256_hex(value) ? value : std::string();
+}
+
+static size_t download_file_size(const std::string & path) {
+    std::error_code ec;
+    if (!std::filesystem::exists(std::filesystem::u8path(path), ec)) {
+        return 0;
+    }
+    const auto size = std::filesystem::file_size(std::filesystem::u8path(path), ec);
+    if (ec) {
+        LOG_WRN("%s: could not read the size of %s: %s\n", __func__, path.c_str(), ec.message().c_str());
+        return 0;
+    }
+    return (size_t) size;
+}
+
+static bool download_file_restart(const std::string & path) {
+    std::error_code ec;
+    std::filesystem::resize_file(std::filesystem::u8path(path), 0, ec);
+    if (ec) {
+        LOG_ERR("%s: could not truncate %s: %s\n", __func__, path.c_str(), ec.message().c_str());
+        return false;
+    }
+    return true;
+}
+
+// DenseX：暫存檔通過所有檢查後才替換完成檔。在那之前舊檔留在原位，交換到一半
+// 失敗時會還原。
+static bool download_file_replace(const std::string & from, const std::string & to) {
+    std::error_code ec;
+    const std::string backup = to + ".downloadInProgress.old";
+    const bool had_old = std::filesystem::exists(std::filesystem::u8path(to), ec);
+
+    if (had_old) {
+        std::filesystem::remove(std::filesystem::u8path(backup), ec);
+        ec.clear();
+        std::filesystem::rename(std::filesystem::u8path(to), std::filesystem::u8path(backup), ec);
+        if (ec) {
+            LOG_ERR("%s: could not move the previous file aside: %s -> %s: %s\n", __func__, to.c_str(), backup.c_str(), ec.message().c_str());
+            return false;
+        }
+    }
+    std::filesystem::rename(std::filesystem::u8path(from), std::filesystem::u8path(to), ec);
+    if (ec) {
+        LOG_ERR("%s: could not move the downloaded file into place: %s -> %s: %s\n", __func__, from.c_str(), to.c_str(), ec.message().c_str());
+        if (had_old) {
+            std::error_code ec_restore;
+            std::filesystem::rename(std::filesystem::u8path(backup), std::filesystem::u8path(to), ec_restore);
+        }
+        return false;
+    }
+    if (had_old) {
+        std::filesystem::remove(std::filesystem::u8path(backup), ec);
+    }
+    return true;
+}
+
+static bool parse_content_range(const std::string & value, size_t & start, size_t & end, size_t & total) {
+    // 格式："bytes <start>-<end>/<total>"，total 可以是 "*"。
+    static const std::regex re(R"(^\s*bytes\s+([0-9]+)-([0-9]+)/([0-9]+|\*)\s*$)", std::regex::icase);
+    std::smatch m;
+    if (!std::regex_match(value, m, re)) {
+        return false;
+    }
+    try {
+        start = (size_t) std::stoull(m[1].str());
+        end   = (size_t) std::stoull(m[2].str());
+        total = m[3].str() == "*" ? 0 : (size_t) std::stoull(m[3].str());
+    } catch (const std::exception &) {
+        return false;
+    }
+    return end >= start;
+}
+
+// DenseX：SHA-256（FIPS 180-4）。common/ 沒有雜湊函式庫，下載器也不該為了這個
+// 依賴 TLS 函式庫，所以放一份精簡實作在這裡。
+struct sha256_ctx {
+    uint32_t h[8];
+    uint64_t len;
+    uint8_t  buf[64];
+    size_t   buf_len;
+};
+
+static uint32_t sha256_rotr(uint32_t x, int n) {
+    return (x >> n) | (x << (32 - n));
+}
+
+static void sha256_init(sha256_ctx & ctx) {
+    ctx.h[0] = 0x6a09e667u;
+    ctx.h[1] = 0xbb67ae85u;
+    ctx.h[2] = 0x3c6ef372u;
+    ctx.h[3] = 0xa54ff53au;
+    ctx.h[4] = 0x510e527fu;
+    ctx.h[5] = 0x9b05688cu;
+    ctx.h[6] = 0x1f83d9abu;
+    ctx.h[7] = 0x5be0cd19u;
+    ctx.len = 0;
+    ctx.buf_len = 0;
+}
+
+static void sha256_transform(sha256_ctx & ctx, const uint8_t * p) {
+    static const uint32_t k[64] = {
+        0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+        0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+        0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu, 0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+        0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u, 0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+        0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u, 0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+        0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u, 0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+        0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u, 0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+        0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u, 0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u,
+    };
+    uint32_t w[64];
+    for (int i = 0; i < 16; ++i) {
+        w[i] = ((uint32_t) p[4 * i + 0] << 24) |
+               ((uint32_t) p[4 * i + 1] << 16) |
+               ((uint32_t) p[4 * i + 2] <<  8) |
+               ((uint32_t) p[4 * i + 3]);
+    }
+    for (int i = 16; i < 64; ++i) {
+        const uint32_t s0 = sha256_rotr(w[i - 15], 7) ^ sha256_rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+        const uint32_t s1 = sha256_rotr(w[i -  2], 17) ^ sha256_rotr(w[i -  2], 19) ^ (w[i -  2] >> 10);
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+
+    uint32_t a = ctx.h[0], b = ctx.h[1], c = ctx.h[2], d = ctx.h[3];
+    uint32_t e = ctx.h[4], f = ctx.h[5], g = ctx.h[6], h = ctx.h[7];
+    for (int i = 0; i < 64; ++i) {
+        const uint32_t s1 = sha256_rotr(e, 6) ^ sha256_rotr(e, 11) ^ sha256_rotr(e, 25);
+        const uint32_t ch = (e & f) ^ (~e & g);
+        const uint32_t t1 = h + s1 + ch + k[i] + w[i];
+        const uint32_t s0 = sha256_rotr(a, 2) ^ sha256_rotr(a, 13) ^ sha256_rotr(a, 22);
+        const uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        const uint32_t t2 = s0 + maj;
+        h = g;
+        g = f;
+        f = e;
+        e = d + t1;
+        d = c;
+        c = b;
+        b = a;
+        a = t1 + t2;
+    }
+    ctx.h[0] += a;
+    ctx.h[1] += b;
+    ctx.h[2] += c;
+    ctx.h[3] += d;
+    ctx.h[4] += e;
+    ctx.h[5] += f;
+    ctx.h[6] += g;
+    ctx.h[7] += h;
+}
+
+static void sha256_update(sha256_ctx & ctx, const void * data, size_t len) {
+    const uint8_t * p = (const uint8_t *) data;
+    ctx.len += len;
+    if (ctx.buf_len > 0) {
+        const size_t take = std::min(len, sizeof(ctx.buf) - ctx.buf_len);
+        std::memcpy(ctx.buf + ctx.buf_len, p, take);
+        ctx.buf_len += take;
+        p += take;
+        len -= take;
+        if (ctx.buf_len == sizeof(ctx.buf)) {
+            sha256_transform(ctx, ctx.buf);
+            ctx.buf_len = 0;
+        }
+    }
+    while (len >= sizeof(ctx.buf)) {
+        sha256_transform(ctx, p);
+        p += sizeof(ctx.buf);
+        len -= sizeof(ctx.buf);
+    }
+    if (len > 0) {
+        std::memcpy(ctx.buf, p, len);
+        ctx.buf_len = len;
+    }
+}
+
+static void sha256_final(sha256_ctx & ctx, uint8_t out[32]) {
+    const uint64_t bits = ctx.len * 8;
+    uint8_t pad[72];
+    std::memset(pad, 0, sizeof(pad));
+    pad[0] = 0x80;
+    const size_t pad_len = (ctx.buf_len < 56) ? (56 - ctx.buf_len) : (120 - ctx.buf_len);
+    sha256_update(ctx, pad, pad_len);
+    uint8_t len_be[8];
+    for (int i = 0; i < 8; ++i) {
+        len_be[i] = (uint8_t) (bits >> (56 - 8 * i));
+    }
+    sha256_update(ctx, len_be, sizeof(len_be));
+    for (int i = 0; i < 8; ++i) {
+        out[4 * i + 0] = (uint8_t) (ctx.h[i] >> 24);
+        out[4 * i + 1] = (uint8_t) (ctx.h[i] >> 16);
+        out[4 * i + 2] = (uint8_t) (ctx.h[i] >>  8);
+        out[4 * i + 3] = (uint8_t) (ctx.h[i]);
+    }
+}
+
+static std::string sha256_file_hex(const std::string & path) {
+    std::ifstream in(std::filesystem::u8path(path), std::ios::binary);
+    if (!in) {
+        return {};
+    }
+    sha256_ctx c;
+    sha256_init(c);
+    std::vector<char> buf(1 << 20);
+    while (in) {
+        in.read(buf.data(), (std::streamsize) buf.size());
+        const std::streamsize n = in.gcount();
+        if (n > 0) {
+            sha256_update(c, buf.data(), (size_t) n);
+        }
+    }
+    if (in.bad()) {
+        return {};
+    }
+    uint8_t digest[32];
+    sha256_final(c, digest);
+    static const char hex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(64);
+    for (const uint8_t v : digest) {
+        out.push_back(hex[v >> 4]);
+        out.push_back(hex[v & 15]);
+    }
+    return out;
+}
 
 static void write_etag(const std::string & path, const std::string & etag) {
     const std::string etag_path = path + ".etag";
@@ -162,21 +492,43 @@ public:
     ProgressBar & operator=(const ProgressBar &) = delete;
 };
 
-static bool common_pull_file(httplib::Client & cli,
-                             const std::string & resolve_path,
-                             const std::string & path_tmp,
-                             bool supports_ranges,
-                             common_download_progress & p,
-                             common_download_callback * callback) {
-    std::ofstream ofs(path_tmp, std::ios::binary | std::ios::app);
-    if (!ofs.is_open()) {
-        LOG_ERR("%s: error opening local file for writing: %s\n", __func__, path_tmp.c_str());
-        return false;
-    }
+enum class download_pull_result {
+    ok,
+    failed,
+    restart,
+};
+
+// DenseX：需要丟掉暫存檔、從第 0 位元組重抓時回傳 "restart"（範圍過期、If-Range
+// 被忽略）。其他拒絕都是硬失敗，不會把寫一半的檔案留成完成檔。
+static download_pull_result common_pull_file(httplib::Client & cli,
+                                             const std::string & resolve_path,
+                                             const std::string & path_tmp,
+                                             bool supports_ranges,
+                                             const std::string & if_range,
+                                             common_download_progress & p,
+                                             common_download_callback * callback) {
+    std::ofstream ofs;
+    bool opened = false;
+    bool restart = false;
+
+    auto open_file = [&](bool truncate) -> bool {
+        if (opened) {
+            return true;
+        }
+        ofs.open(std::filesystem::u8path(path_tmp),
+                 std::ios::binary | (truncate ? std::ios::trunc : std::ios::app));
+        if (!ofs.is_open()) {
+            LOG_ERR("%s: error opening local file for writing: %s\n", __func__, path_tmp.c_str());
+            return false;
+        }
+        opened = true;
+        return true;
+    };
 
     httplib::Headers headers;
-    if (supports_ranges && p.downloaded > 0) {
+    if (supports_ranges && p.downloaded > 0 && !if_range.empty()) {
         headers.emplace("Range", "bytes=" + std::to_string(p.downloaded) + "-");
+        headers.emplace("If-Range", if_range);
     }
 
     const char * func = __func__; // avoid __func__ inside a lambda
@@ -184,26 +536,105 @@ static bool common_pull_file(httplib::Client & cli,
 
     auto res = cli.Get(resolve_path, headers,
         [&](const httplib::Response &response) {
-            if (p.downloaded > 0 && response.status != 206) {
-                LOG_WRN("%s: server did not respond with 206 Partial Content for a resume request. Status: %d\n", func, response.status);
-                return false;
+            if (p.downloaded > 0) {
+                if (response.status == 200) {
+                    // DenseX：If-Range 沒對上，或伺服器忽略 Range。把這個 body
+                    // 接在舊前綴後面會混到兩個版本。
+                    LOG_WRN("%s: server sent a full body instead of a partial response; restarting from zero\n", func);
+                    if (!open_file(true)) {
+                        return false;
+                    }
+                    p.downloaded = 0;
+                    if (response.has_header("Content-Length")) {
+                        try {
+                            const size_t content_length = (size_t) std::stoull(response.get_header_value("Content-Length"));
+                            if (p.total != 0 && content_length != p.total) {
+                                LOG_ERR("%s: Content-Length %zu does not match the expected size %zu\n", func, content_length, p.total);
+                                return false;
+                            }
+                            p.total = content_length;
+                        } catch (const std::exception & e) {
+                            LOG_WRN("%s: invalid Content-Length header: %s\n", func, e.what());
+                        }
+                    }
+                    return true;
+                }
+                if (response.status == 416) {
+                    LOG_WRN("%s: server rejected the resume range; restarting from zero\n", func);
+                    restart = true;
+                    return false;
+                }
+                if (response.status != 206) {
+                    LOG_WRN("%s: server did not respond with 206 Partial Content for a resume request. Status: %d\n", func, response.status);
+                    return false;
+                }
+                // DenseX：只有 Content-Range 正好從要求的位元組開始、且屬於同一個
+                // 完整檔案時，206 才能用。
+                if (!response.has_header("Content-Range")) {
+                    LOG_ERR("%s: 206 response without a Content-Range header\n", func);
+                    return false;
+                }
+                size_t start = 0, end = 0, total = 0;
+                if (!parse_content_range(response.get_header_value("Content-Range"), start, end, total)) {
+                    LOG_ERR("%s: malformed Content-Range: %s\n", func, response.get_header_value("Content-Range").c_str());
+                    return false;
+                }
+                if (start != p.downloaded) {
+                    LOG_ERR("%s: Content-Range starts at %zu but the local file ends at %zu\n", func, start, p.downloaded);
+                    return false;
+                }
+                if (total != 0 && p.total != 0 && total != p.total) {
+                    LOG_ERR("%s: Content-Range total is %zu but the expected size is %zu\n", func, total, p.total);
+                    return false;
+                }
+                if (p.total == 0 && total != 0) {
+                    p.total = total;
+                }
+                if (response.has_header("Content-Length")) {
+                    try {
+                        const size_t content_length = (size_t) std::stoull(response.get_header_value("Content-Length"));
+                        if (content_length != end - start + 1) {
+                            LOG_ERR("%s: Content-Length %zu does not match the Content-Range length %zu\n",
+                                    func, content_length, end - start + 1);
+                            return false;
+                        }
+                    } catch (const std::exception & e) {
+                        LOG_WRN("%s: invalid Content-Length header: %s\n", func, e.what());
+                    }
+                }
+                if (!open_file(false)) {
+                    return false;
+                }
+                return true;
             }
-            if (p.downloaded == 0 && response.status != 200) {
+
+            if (response.status != 200) {
                 LOG_WRN("%s: download received non-successful status code: %d\n", func, response.status);
                 return false;
             }
-            if (p.total == 0 && response.has_header("Content-Length")) {
+            if (!open_file(true)) {
+                return false;
+            }
+            if (response.has_header("Content-Length")) {
                 try {
-                    size_t content_length = std::stoull(response.get_header_value("Content-Length"));
-                    p.total = p.downloaded + content_length;
-                } catch (const std::exception &e) {
+                    const size_t content_length = (size_t) std::stoull(response.get_header_value("Content-Length"));
+                    if (p.total != 0 && content_length != p.total) {
+                        LOG_ERR("%s: Content-Length %zu does not match the expected size %zu\n", func, content_length, p.total);
+                        return false;
+                    }
+                    p.total = content_length;
+                } catch (const std::exception & e) {
                     LOG_WRN("%s: invalid Content-Length header: %s\n", func, e.what());
                 }
             }
             return true;
         },
         [&](const char *data, size_t len) {
-            ofs.write(data, len);
+            if (!opened) {
+                LOG_ERR("%s: response body arrived before the destination file was open\n", func);
+                return false;
+            }
+            ofs.write(data, (std::streamsize) len);
             if (!ofs) {
                 LOG_ERR("%s: error writing to file: %s\n", func, path_tmp.c_str());
                 return false;
@@ -225,21 +656,27 @@ static bool common_pull_file(httplib::Client & cli,
         nullptr
     );
 
+    if (opened) {
+        ofs.close();
+        if (!ofs) {
+            LOG_ERR("%s: error closing file: %s\n", func, path_tmp.c_str());
+            return download_pull_result::failed;
+        }
+    }
+
+    if (restart) {
+        return download_pull_result::restart;
+    }
+
     if (!res) {
         LOG_ERR("%s: download failed: %s (status: %d)\n",
                 __func__,
                 httplib::to_string(res.error()).c_str(),
                 res ? res->status : -1);
-        return false;
+        return download_pull_result::failed;
     }
 
-    ofs.close();
-    if (!ofs) {
-        LOG_ERR("%s: error closing file: %s\n", __func__, path_tmp.c_str());
-        return false;
-    }
-
-    return true;
+    return download_pull_result::ok;
 }
 
 // download one single file from remote URL to local path
@@ -279,7 +716,33 @@ static int common_download_file_single_online(const std::string & url,
         LOG_DBG("%s: no previous model file found %s\n", __func__, path.c_str());
     }
 
+    // DenseX：HF 在 resolve 回應用 X-Linked-ETag 帶 LFS SHA-256，httplib 跟隨
+    // 轉址到 CDN 後這個標頭就沒了。先看不跟隨的第一個回應，再正常 HEAD 取得大小
+    // 與 range 支援。
+    cli.set_follow_location(false);
     auto head = cli.Head(parts.path);
+    std::string linked_sha256;
+    if (head) {
+        if (head->has_header("X-Linked-ETag")) {
+            linked_sha256 = normalize_sha256(head->get_header_value("X-Linked-ETag"));
+        }
+        if (head->status >= 300 && head->status < 400 && head->has_header("Location")) {
+            cli.set_follow_location(true);
+            head = cli.Head(parts.path);
+        }
+    }
+    cli.set_follow_location(true);
+    if (head && head->has_header("X-Linked-ETag")) {
+        const std::string header_sha256 = normalize_sha256(head->get_header_value("X-Linked-ETag"));
+        if (!header_sha256.empty()) {
+            if (!linked_sha256.empty() && linked_sha256 != header_sha256) {
+                LOG_ERR("%s: X-Linked-ETag changed between the resolve and the final response\n", __func__);
+                return -1;
+            }
+            linked_sha256 = header_sha256;
+        }
+    }
+
     if (!head || head->status < 200 || head->status >= 300) {
         LOG_TRC("%s: HEAD failed, status: %d\n", __func__, head ? head->status : -1);
         if (file_exists) {
@@ -292,6 +755,10 @@ static int common_download_file_single_online(const std::string & url,
     std::string etag;
     if (head->has_header("ETag")) {
         etag = head->get_header_value("ETag");
+    }
+    std::string last_modified;
+    if (head->has_header("Last-Modified")) {
+        last_modified = head->get_header_value("Last-Modified");
     }
 
     common_download_progress p;
@@ -309,6 +776,24 @@ static int common_download_file_single_online(const std::string & url,
         supports_ranges = head->get_header_value("Accept-Ranges") != "none";
     }
 
+    // DenseX：預期摘要來自呼叫端（HF LFS oid、OCI blob digest）或 X-Linked-ETag。
+    // 一般 ETag 絕不當成 SHA-256 使用。
+    std::string trusted_sha256;
+    if (!opts.expected_sha256.empty()) {
+        trusted_sha256 = normalize_sha256(opts.expected_sha256);
+        if (trusted_sha256.empty()) {
+            LOG_WRN("%s: ignoring expected sha256 that is not a 64-hex digest: %s\n", __func__, opts.expected_sha256.c_str());
+        }
+    }
+    if (!linked_sha256.empty()) {
+        if (!trusted_sha256.empty() && trusted_sha256 != linked_sha256) {
+            LOG_ERR("%s: expected sha256 %s does not match the server X-Linked-ETag %s\n",
+                    __func__, trusted_sha256.c_str(), linked_sha256.c_str());
+            return -1;
+        }
+        trusted_sha256 = linked_sha256;
+    }
+
     if (file_exists) {
         if (etag.empty()) {
             LOG_DBG("%s: using cached file (no server etag): %s\n", __func__, path.c_str());
@@ -318,11 +803,8 @@ static int common_download_file_single_online(const std::string & url,
             LOG_DBG("%s: using cached file (same etag): %s\n", __func__, path.c_str());
             return 304; // 304 Not Modified - fake cached response
         }
-        // pass this point, the file exists but is different from the server version, so we need to redownload it
-        if (remove(path.c_str()) != 0) {
-            LOG_ERR("%s: unable to delete file: %s\n", __func__, path.c_str());
-            return -1;
-        }
+        // DenseX：新檔通過所有檢查前，舊檔留在原位，更新失敗不會毀掉可用的模型。
+        LOG_INF("%s: remote file changed; keeping the previous file until the new one is verified\n", __func__);
     }
 
     { // silent
@@ -332,7 +814,47 @@ static int common_download_file_single_online(const std::string & url,
 
     bool success = false;
     const std::string path_temporary = path + ".downloadInProgress";
+    const std::string path_meta      = path_temporary + ".meta";
     int delay = retry_delay_seconds;
+
+    // DenseX：If-Range 需要強驗證器。沒有驗證器就無法把本機暫存檔綁到遠端版本，
+    // 這種情況一律不續傳。
+    const bool strong_etag = !etag.empty() && etag.rfind("W/", 0) != 0;
+    const std::string if_range = strong_etag ? etag : last_modified;
+    const bool can_resume = supports_ranges && !if_range.empty();
+
+    bool resume = false;
+    if (std::filesystem::exists(std::filesystem::u8path(path_temporary))) {
+        download_meta meta;
+        const bool meta_ok = download_meta_load(path_meta, meta);
+        resume = can_resume &&
+                 meta_ok &&
+                 meta.url           == url &&
+                 meta.etag          == etag &&
+                 meta.last_modified == last_modified &&
+                 meta.size          == p.total &&
+                 meta.sha256        == trusted_sha256;
+        if (!resume) {
+            const char * why = !can_resume      ? "no strong validator or range support" :
+                               !meta_ok         ? "missing or invalid resume metadata" :
+                               meta.url != url  ? "url" :
+                               meta.etag != etag ? "etag" :
+                               meta.last_modified != last_modified ? "last-modified" :
+                               meta.size != p.total ? "size" : "sha256";
+            LOG_WRN("%s: partial file does not belong to the current remote version (%s); restarting from zero\n", __func__, why);
+            if (!download_file_restart(path_temporary)) {
+                return -1;
+            }
+        }
+    }
+
+    download_meta meta;
+    meta.url           = url;
+    meta.etag          = etag;
+    meta.last_modified = last_modified;
+    meta.sha256        = trusted_sha256;
+    meta.size          = p.total;
+    download_meta_save(path_meta, meta);
 
     if (opts.callback) {
         opts.callback->on_start(p);
@@ -348,15 +870,12 @@ static int common_download_file_single_online(const std::string & url,
             delay *= retry_delay_seconds;
         }
 
-        size_t existing_size = 0;
-
-        if (std::filesystem::exists(path_temporary)) {
-            if (supports_ranges) {
-                existing_size = std::filesystem::file_size(path_temporary);
-            } else if (remove(path_temporary.c_str()) != 0) {
-                LOG_ERR("%s: unable to delete file: %s\n", __func__, path_temporary.c_str());
+        size_t existing_size = download_file_size(path_temporary);
+        if (!can_resume || (p.total != 0 && existing_size > p.total)) {
+            if (existing_size > 0 && !download_file_restart(path_temporary)) {
                 break;
             }
+            existing_size = 0;
         }
 
         p.downloaded = existing_size;
@@ -365,30 +884,71 @@ static int common_download_file_single_online(const std::string & url,
                 __func__, common_http_show_masked_url(parts).c_str(),
                 path_temporary.c_str(), etag.c_str());
 
-        if (common_pull_file(cli, parts.path, path_temporary, supports_ranges, p, opts.callback)) {
-            if (std::rename(path_temporary.c_str(), path.c_str()) != 0) {
-                LOG_ERR("%s: unable to rename file: %s to %s\n", __func__, path_temporary.c_str(), path.c_str());
+        const download_pull_result rc = common_pull_file(cli, parts.path, path_temporary, supports_ranges,
+                                                         can_resume ? if_range : std::string(), p, opts.callback);
+        if (rc == download_pull_result::restart) {
+            if (!download_file_restart(path_temporary)) {
                 break;
             }
-            if (!etag.empty() && !skip_etag) {
-                write_etag(path, etag);
+            continue;
+        }
+        if (rc != download_pull_result::ok) {
+            continue;
+        }
+
+        const size_t final_size = download_file_size(path_temporary);
+        if (p.total != 0 && final_size != p.total) {
+            LOG_ERR("%s: downloaded %zu bytes but the remote file has %zu bytes\n", __func__, final_size, p.total);
+            if (final_size > p.total && !download_file_restart(path_temporary)) {
+                break;
             }
-            success = true;
+            continue;
+        }
+
+        if (!trusted_sha256.empty()) {
+            const std::string actual = sha256_file_hex(path_temporary);
+            if (actual.empty() || actual != trusted_sha256) {
+                LOG_ERR("%s: sha256 mismatch: expected %s, got %s\n",
+                        __func__, trusted_sha256.c_str(), actual.empty() ? "(read error)" : actual.c_str());
+                if (!download_file_restart(path_temporary)) {
+                    break;
+                }
+                continue;
+            }
+            LOG_DBG("%s: verified sha256 %s\n", __func__, actual.c_str());
+        } else {
+            LOG_WRN("%s: no trusted sha256 for this download; only Content-Range and size were verified\n", __func__);
+        }
+
+        if (!download_file_replace(path_temporary, path)) {
             break;
         }
+        if (!etag.empty() && !skip_etag) {
+            write_etag(path, etag);
+        }
+        {
+            std::error_code ec;
+            std::filesystem::remove(std::filesystem::u8path(path_meta), ec);
+        }
+        success = true;
+        break;
     }
 
     if (opts.callback) {
         opts.callback->on_done(p, success);
     }
     if (opts.callback && opts.callback->is_cancelled() &&
-        std::filesystem::exists(path_temporary)) {
-        if (remove(path_temporary.c_str()) != 0) {
+        std::filesystem::exists(std::filesystem::u8path(path_temporary))) {
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::u8path(path_temporary), ec);
+        if (ec) {
             LOG_ERR("%s: unable to delete temporary file: %s\n", __func__, path_temporary.c_str());
         }
+        std::filesystem::remove(std::filesystem::u8path(path_meta), ec);
     }
     if (!success) {
-        LOG_ERR("%s: download failed after %d attempts\n", __func__, max_attempts);
+        LOG_ERR("%s: download failed after %d attempts; the partial file is kept for a later resume: %s\n",
+                __func__, max_attempts, path_temporary.c_str());
         return -1; // max attempts reached
     }
 
@@ -904,6 +1464,8 @@ std::string common_docker_resolve_model(const std::string & docker) {
         const std::string blob_url = url_prefix + "/blobs/" + gguf_digest;
         common_download_opts opts;
         opts.bearer_token = token;
+        // DenseX：OCI manifest 的 sha256 digest 是可信的完成檔摘要。
+        opts.expected_sha256 = gguf_digest.substr(7);
         const int http_status = common_download_file_single(blob_url, local_path, opts);
         if (!is_http_status_ok(http_status)) {
             throw std::runtime_error("Failed to download Docker Model");
