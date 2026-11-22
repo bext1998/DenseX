@@ -1,0 +1,156 @@
+ied 4 ½ months
+__ggml_vocab_test__
+Äpfel
+__ggml_vocab_test__
+
+__ggml_vocab_test__
+ 
+__ggml_vocab_test__
+  
+__ggml_vocab_test__
+   
+__ggml_vocab_test__
+	
+__ggml_vocab_test__
+
+
+__ggml_vocab_test__
+
+
+
+__ggml_vocab_test__
+
+
+
+
+__ggml_vocab_test__
+	
+
+__ggml_vocab_test__
+Hello world
+__ggml_vocab_test__
+ Hello world
+__ggml_vocab_test__
+Hello World
+__ggml_vocab_test__
+ Hello World
+__ggml_vocab_test__
+ Hello World!
+__ggml_vocab_test__
+Hello, world!
+__ggml_vocab_test__
+ Hello, world!
+__ggml_vocab_test__
+ this is 🦙.cpp
+__ggml_vocab_test__
+w048 7tuijk dsdfhu
+__ggml_vocab_test__
+нещо на Български
+__ggml_vocab_test__
+កាន់តែពិសេសអាចខលចេញ
+__ggml_vocab_test__
+🚀 (normal) 😶‍🌫️ (multiple emojis concatenated) ✅ (only emoji that has its own token)
+__ggml_vocab_test__
+Hello
+__ggml_vocab_test__
+ Hello
+__ggml_vocab_test__
+  Hello
+__ggml_vocab_test__
+   Hello
+__ggml_vocab_test__
+    Hello
+__ggml_vocab_test__
+    Hello
+    Hello
+__ggml_vocab_test__
+ (
+__ggml_vocab_test__
+
+ =
+__ggml_vocab_test__
+' era
+__ggml_vocab_test__
+Hello, y'all! How are you 😁 ?我想在apple工作1314151天～
+__ggml_vocab_test__
+!!!!!!
+__ggml_vocab_test__
+3
+__ggml_vocab_test__
+33
+__ggml_vocab_test__
+333
+__ggml_vocab_test__
+3333
+__ggml_vocab_test__
+33333
+__ggml_vocab_test__
+333333
+__ggml_vocab_test__
+3333333
+__ggml_vocab_test__
+33333333
+__ggml_vocab_test__
+333333333
+__ggml_vocab_test__
+Cửa Việt
+__ggml_vocab_test__
+ discards
+__ggml_vocab_test__
+
+ 
+
+ 
+
+
+ 	 		 	
+  
+   
+    
+     
+🚀 (normal) 😶‍🌫️ (multiple emojis concatenated) ✅ 🦙🦙 3 33 333 3333 33333 333333 3333333 33333333 3.3 3..3 3...3 កាន់តែពិសេសអាច😁 ?我想在apple工作1314151天～ ------======= нещо на Български ''''''```````""""......!!!!!!?????? I've been 'told he's there, 'RE you sure? 'M not sure I'll make it, 'D you like some tea? We'Ve a'lL
+__ggml_vocab_test__
+é
+__ggml_vocab_test__
+résumé
+__ggml_vocab_test__
+àààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààààà
+__ggml_vocab_test__
+Vieết Nam
+__ggml_vocab_test__
+Qwen 3.8 是一個大型語言模型，支援繁體中文、簡體中文與程式碼。今天天氣很好，我們去公園散步。
+__ggml_vocab_test__
+深度學習模型的推論速度受到記憶體頻寬限制；量化可以降低 VRAM 使用量，但也可能影響精度。
+__ggml_vocab_test__
+def fibonacci(n: int) -> int:
+    a, b = 0, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+
+__ggml_vocab_test__
+#include <vector>
+int main() { std::vector<int> v{1, 2, 3}; return (int) v.size(); }
+
+__ggml_vocab_test__
+{"name": "Qwen 3.8", "tokens": 248320, "ok": true}
+__ggml_vocab_test__
+👨‍👩‍👧‍👦 🏳️‍🌈 👍🏽 🚀😁✅🦙
+__ggml_vocab_test__
+<|endoftext|>
+__ggml_vocab_test__
+<|im_start|>system
+You are Qwen.<|im_end|>
+<|im_start|>user
+你好<|im_end|>
+<|im_start|>assistant
+
+__ggml_vocab_test__
+<|object_ref_start|><|object_ref_end|><|vision_start|><|vision_end|>
+__ggml_vocab_test__
+<tool_call>{"city": "台北"}</tool_call><tool_response>晴天</tool_response>
+__ggml_vocab_test__
+<|fim_prefix|>def add(a, b):<|fim_suffix|>    return a + b<|fim_middle|>
+__ggml_vocab_test__
+<think>先算 1+1</think>答案是 2。
+__ggml_vocab_test__

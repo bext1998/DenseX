@@ -1,0 +1,36 @@
+Qwen 3.8 是一個大型語言模型，支援繁體中文、簡體中文與程式碼。今天天氣很好，我們去公園散步。
+__ggml_vocab_test__
+深度學習模型的推論速度受到記憶體頻寬限制；量化可以降低 VRAM 使用量，但也可能影響精度。
+__ggml_vocab_test__
+def fibonacci(n: int) -> int:
+    a, b = 0, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+
+__ggml_vocab_test__
+#include <vector>
+int main() { std::vector<int> v{1, 2, 3}; return (int) v.size(); }
+
+__ggml_vocab_test__
+{"name": "Qwen 3.8", "tokens": 248320, "ok": true}
+__ggml_vocab_test__
+👨‍👩‍👧‍👦 🏳️‍🌈 👍🏽 🚀😁✅🦙
+__ggml_vocab_test__
+<|endoftext|>
+__ggml_vocab_test__
+<|im_start|>system
+You are Qwen.<|im_end|>
+<|im_start|>user
+你好<|im_end|>
+<|im_start|>assistant
+
+__ggml_vocab_test__
+<|object_ref_start|><|object_ref_end|><|vision_start|><|vision_end|>
+__ggml_vocab_test__
+<tool_call>{"city": "台北"}</tool_call><tool_response>晴天</tool_response>
+__ggml_vocab_test__
+<|fim_prefix|>def add(a, b):<|fim_suffix|>    return a + b<|fim_middle|>
+__ggml_vocab_test__
+<think>先算 1+1</think>答案是 2。
+__ggml_vocab_test__
