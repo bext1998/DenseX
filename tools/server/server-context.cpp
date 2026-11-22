@@ -2524,9 +2524,16 @@ private:
         // populate res.probs_output
         if (slot.task->params.sampling.n_probs > 0) {
             if (!slot.task->params.stream && slot.stop == STOP_TYPE_WORD) {
-                const llama_tokens stop_word_toks = common_tokenize(ctx_tgt, slot.stopping_word, false);
-
-                size_t safe_offset = std::min(slot.generated_token_probs.size(), stop_word_toks.size());
+                // 從生成尾端累加每個 token 解碼片段的位元組長度，直到涵蓋 stop 字串；
+                // 不再重新分詞，避免 NFC 後重分詞的 token 數和實際生成不同。
+                const size_t stop_bytes = slot.stopping_word.size();
+                size_t safe_offset = 0;
+                size_t covered_bytes = 0;
+                for (auto it = slot.generated_token_probs.rbegin();
+                        it != slot.generated_token_probs.rend() && covered_bytes < stop_bytes; ++it) {
+                    covered_bytes += common_token_to_piece(ctx_tgt, it->tok, false).size();
+                    ++safe_offset;
+                }
                 res->probs_output = std::vector<completion_token_output>(
                         slot.generated_token_probs.begin(),
                         slot.generated_token_probs.end() - safe_offset);
