@@ -22,6 +22,24 @@
 #include <set>
 #include <unordered_map>
 
+// NFC 正規化 UTF-8 字串；純 ASCII 直接跳過，避免一般英文/程式碼多走一次 Unicode 轉換。
+// 輸入不是合法 UTF-8 時保留原字串，讓後續分詞維持原本的錯誤處理。
+static std::string unicode_nfc_normalize(const std::string & text) {
+    if (std::all_of(text.begin(), text.end(), [](unsigned char c) { return c < 0x80; })) {
+        return text;
+    }
+    try {
+        std::string result;
+        result.reserve(text.size());
+        for (const uint32_t cpt : unicode_cpts_normalize_nfc(unicode_cpts_from_utf8(text))) {
+            result += unicode_cpt_to_utf8(cpt);
+        }
+        return result;
+    } catch (const std::invalid_argument &) {
+        return text;
+    }
+}
+
 //
 // helpers
 //
@@ -3237,6 +3255,12 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
         ml.get_key(LLM_KV_GENERAL_NAME,  model_name,    false);
         ml.get_key(LLM_KV_TOKENIZER_PRE, tokenizer_pre, false);
         ml.get_key(LLM_KV_GENERAL_ARCHITECTURE, general_arch, false);
+        // qwen35 是 DenseX 唯一支援的架構；GGUF 沒有 normalizer 鍵時，官方 Qwen 3.8
+        // tokenizer 宣告的是 NFC。明確寫 false 的鍵仍然優先，不覆寫。
+        if (general_arch == "qwen35" && gguf_find_key(ctx, kv(LLM_KV_TOKENIZER_NORMALIZER_NFC).c_str()) == -1) {
+            normalizer_opts.nfc = true;
+            LLAMA_LOG_INFO("%s: qwen35 has no tokenizer.ggml.normalizer.nfc key; enabling NFC by default\n", __func__);
+        }
 
         // model name to lowercase
         std::transform(model_name.begin(), model_name.end(), model_name.begin(),
@@ -3646,6 +3670,11 @@ std::vector<llama_token> llama_vocab::impl::tokenize(
                 for (const auto & fragment : fragment_buffer) {
                     if (fragment.type == FRAGMENT_BUFFER_VARIANT_TYPE_RAW_TEXT) {
                         std::string text = fragment.raw_text.substr(fragment.offset, fragment.length);
+
+                        // 只處理一般文字片段；special token 在 tokenizer_st_partition 已切開，不會到這裡。
+                        if (vocab.get_normalizer_opts().nfc) {
+                            text = unicode_nfc_normalize(text);
+                        }
 
                         if (escape_whitespaces) {
                             llama_escape_whitespace(text);
