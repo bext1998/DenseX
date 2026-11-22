@@ -389,7 +389,7 @@ struct server_slot {
     std::string  debug_generated_text;
     llama_tokens generated_tokens;
     size_t n_sent_text = 0; // number of sent text character (i.e. handle partial UTF-8 on streaming)
-    bool   stop_truncated = false; // whether a stop string actually truncated generated text
+    bool   stop_truncated = false; // stop 字串或縮排上限是否真的刪掉了生成文字（非串流 logprobs 篩選用）
 
     std::vector<completion_token_output> generated_token_probs;
 
@@ -2245,7 +2245,8 @@ private:
 
             size_t stop_pos = slot.find_stopping_strings(str_test, token_str.size(), true);
             if (stop_pos != std::string::npos) {
-                slot.stop_truncated = true;
+                // 只有真的刪掉文字才標記（空 stop 命中時不刪任何位元組）。
+                slot.stop_truncated = slot.stop_truncated || pos + stop_pos < slot.generated.text.size();
                 slot.generated.truncate(pos + stop_pos);
                 pos = std::min(slot.n_sent_text, slot.generated.text.size());
             } else if (slot.has_next_token && !llama_vocab_is_eog(vocab, result.tok) ) {
@@ -2309,7 +2310,8 @@ private:
                         slot.stop           = STOP_TYPE_LIMIT;
                         slot.has_next_token = false;
 
-                        // cut the last line
+                        // cut the last line（被刪掉那一行的 logprobs 也要篩掉）
+                        slot.stop_truncated = true;
                         slot.generated.truncate(pos);
 
                         SLT_DBG(slot, "stopped by indentation limit, n_gen = %d, n_indent = %d\n", (int) slot.stats.n_gen, n_indent);
