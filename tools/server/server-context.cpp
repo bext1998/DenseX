@@ -389,6 +389,7 @@ struct server_slot {
     std::string  debug_generated_text;
     llama_tokens generated_tokens;
     size_t n_sent_text = 0; // number of sent text character (i.e. handle partial UTF-8 on streaming)
+    size_t n_stop_trim_bytes = 0; // bytes removed by the last stop truncate, for non-stream logprobs
 
     std::vector<completion_token_output> generated_token_probs;
 
@@ -495,6 +496,7 @@ struct server_slot {
         stop           = STOP_TYPE_NONE;
         stopping_word  = "";
         n_sent_text    = 0;
+        n_stop_trim_bytes = 0;
 
         if (can_speculate()) {
             spec_draft.clear();
@@ -2222,6 +2224,7 @@ private:
     bool process_token(completion_token_output & result, server_slot & slot) {
         // remember which tokens were sampled - used for repetition penalties during sampling
         const std::string token_str = result.text_to_send;
+        result.text_original = token_str;
         slot.sampled = result.tok;
 
         slot.generated.append(token_str, result.tok);
@@ -2242,7 +2245,9 @@ private:
 
             size_t stop_pos = slot.find_stopping_strings(str_test, token_str.size(), true);
             if (stop_pos != std::string::npos) {
-                slot.generated.truncate(pos + stop_pos);
+                const size_t trim_end = pos + stop_pos;
+                slot.n_stop_trim_bytes = slot.generated.text.size() - trim_end;
+                slot.generated.truncate(trim_end);
                 pos = std::min(slot.n_sent_text, slot.generated.text.size());
             } else if (slot.has_next_token && !llama_vocab_is_eog(vocab, result.tok) ) {
                 stop_pos = slot.find_stopping_strings(str_test, token_str.size(), false);
@@ -2524,14 +2529,13 @@ private:
         // populate res.probs_output
         if (slot.task->params.sampling.n_probs > 0) {
             if (!slot.task->params.stream && slot.stop == STOP_TYPE_WORD) {
-                // 從生成尾端累加每個 token 解碼片段的位元組長度，直到涵蓋 stop 字串；
-                // 不再重新分詞，避免 NFC 後重分詞的 token 數和實際生成不同。
-                const size_t stop_bytes = slot.stopping_word.size();
+                // stop 截斷會連 stop 後面的尾端位元組一起刪；用實際刪掉的位元組數，
+                // 從生成尾端累加原始 token 片段，不再重新分詞或依 stop 長度猜。
                 size_t safe_offset = 0;
                 size_t covered_bytes = 0;
                 for (auto it = slot.generated_token_probs.rbegin();
-                        it != slot.generated_token_probs.rend() && covered_bytes < stop_bytes; ++it) {
-                    covered_bytes += common_token_to_piece(ctx_tgt, it->tok, false).size();
+                        it != slot.generated_token_probs.rend() && covered_bytes < slot.n_stop_trim_bytes; ++it) {
+                    covered_bytes += it->text_original.size();
                     ++safe_offset;
                 }
                 res->probs_output = std::vector<completion_token_output>(

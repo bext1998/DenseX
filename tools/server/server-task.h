@@ -349,6 +349,8 @@ struct completion_token_output {
     llama_token tok;
     float prob;
     std::string text_to_send;
+    // process_token 進來的原始片段（尚未因 stop 截斷）；供非串流 logprobs 尾端計數用。
+    std::string text_original;
     struct prob_info {
         llama_token tok;
         std::string txt;
