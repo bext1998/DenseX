@@ -16,10 +16,9 @@ JSON) but stops them from matching, so the text falls through to plain BPE.
 Qwen marks CONTROL tokens with special=true or with the <|...|> spelling, while
 USER_DEFINED ones look like <tool_call>. Verified against the C++ test.
 
-The HF tokenizer.json declares an NFC normalizer, but the formal Qwen 3.8 GGUF
-does not carry tokenizer.ggml.normalizer.nfc, so llama.cpp loads it without NFC.
-The fixtures therefore disable the normalizer too; otherwise decomposed accents
-would differ from what DenseX actually tokenizes.
+The HF tokenizer.json declares an NFC normalizer. Since D7 the engine applies NFC
+to BPE text, and qwen35 defaults it on when the GGUF has no normalizer key, so the
+fixtures keep the HF normalizer enabled and the expected ids are the official ones.
 
 Requires the `tokenizers` package.
 """
@@ -67,7 +66,6 @@ def load_tokenizers(tokenizer_json: Path) -> tuple[TokenizerBundle, int, int]:
             # 保留條目與 id，換成文字裡不會出現的 sentinel，讓它不再被匹配
             t["content"] = f"\x00densex-control-{t['id']}\x00"
             n_control += 1
-    data["normalizer"] = None
     tok = tokenizers.Tokenizer.from_str(json.dumps(data, ensure_ascii=False))
     return TokenizerBundle(tok), len(added), n_control
 
