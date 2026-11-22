@@ -17,7 +17,7 @@ DenseX 是給低 VRAM 顯示卡使用的家用稠密模型推論引擎。它從 
 3. **純重構必須讓行為完全不變**：commit 前要確認 temperature 0 的輸出相同，受影響的測試也都通過。不得為了讓測試通過而放寬測試、golden 值或門檻。
 4. **版本控制**：
    - 改動完成並驗證後，直接 commit 到 `densex`，一個 commit 只做一件事。
-   - 沒有擁有者同意，不 push、不開 PR、不新增 remote。
+   - 驗證通過後可以 fast-forward push 到 GitHub `main`；重大架構改動（改 API／ABI、擴大或放棄支援範圍、新增或移除整個子系統、大幅改預設行為）、強制推送、開 PR、新增 remote 要先取得擁有者同意。
    - commit 訊息要寫：改了什麼、為什麼、開關與預設值，以及根據的量測結果。
 5. **Issue 是公開的**（https://github.com/bext1998/DenseX/issues）：
    - 從 issue 領工作，加上 `in-progress` 標籤，完成後留言結果（數字、commit），再關閉。
