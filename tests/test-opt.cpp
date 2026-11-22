@@ -834,6 +834,7 @@ static std::pair<int, int> test_regression(
 
     ggml_backend_buffer_free(buf);
     ggml_free(ctx_static);
+    ggml_free(ctx_compute);
     ggml_opt_dataset_free(dataset);
 
     return std::make_pair(npass, ntest);
