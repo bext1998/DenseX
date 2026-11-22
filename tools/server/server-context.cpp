@@ -389,7 +389,7 @@ struct server_slot {
     std::string  debug_generated_text;
     llama_tokens generated_tokens;
     size_t n_sent_text = 0; // number of sent text character (i.e. handle partial UTF-8 on streaming)
-    size_t n_stop_trim_bytes = 0; // bytes removed by the last stop truncate, for non-stream logprobs
+    bool   stop_truncated = false; // whether a stop string actually truncated generated text
 
     std::vector<completion_token_output> generated_token_probs;
 
@@ -496,7 +496,7 @@ struct server_slot {
         stop           = STOP_TYPE_NONE;
         stopping_word  = "";
         n_sent_text    = 0;
-        n_stop_trim_bytes = 0;
+        stop_truncated = false;
 
         if (can_speculate()) {
             spec_draft.clear();
@@ -2224,7 +2224,7 @@ private:
     bool process_token(completion_token_output & result, server_slot & slot) {
         // remember which tokens were sampled - used for repetition penalties during sampling
         const std::string token_str = result.text_to_send;
-        result.text_original = token_str;
+        result.gen_begin = slot.generated.text.size();
         slot.sampled = result.tok;
 
         slot.generated.append(token_str, result.tok);
@@ -2245,9 +2245,8 @@ private:
 
             size_t stop_pos = slot.find_stopping_strings(str_test, token_str.size(), true);
             if (stop_pos != std::string::npos) {
-                const size_t trim_end = pos + stop_pos;
-                slot.n_stop_trim_bytes = slot.generated.text.size() - trim_end;
-                slot.generated.truncate(trim_end);
+                slot.stop_truncated = true;
+                slot.generated.truncate(pos + stop_pos);
                 pos = std::min(slot.n_sent_text, slot.generated.text.size());
             } else if (slot.has_next_token && !llama_vocab_is_eog(vocab, result.tok) ) {
                 stop_pos = slot.find_stopping_strings(str_test, token_str.size(), false);
@@ -2528,19 +2527,23 @@ private:
 
         // populate res.probs_output
         if (slot.task->params.sampling.n_probs > 0) {
-            if (!slot.task->params.stream && slot.stop == STOP_TYPE_WORD) {
-                // stop 截斷會連 stop 後面的尾端位元組一起刪；用實際刪掉的位元組數，
-                // 從生成尾端累加原始 token 片段，不再重新分詞或依 stop 長度猜。
-                size_t safe_offset = 0;
-                size_t covered_bytes = 0;
-                for (auto it = slot.generated_token_probs.rbegin();
-                        it != slot.generated_token_probs.rend() && covered_bytes < slot.n_stop_trim_bytes; ++it) {
-                    covered_bytes += it->text_original.size();
-                    ++safe_offset;
+            if (!slot.task->params.stream) {
+                if (!slot.stop_truncated) {
+                    // 沒有截斷時全部保留，和改前相同（包含文字為空的 EOS token）。
+                    res->probs_output = std::vector<completion_token_output>(
+                            slot.generated_token_probs.begin(),
+                            slot.generated_token_probs.end());
+                } else {
+                    // stop 可能在中途截斷文字，之後 slot.stop 也可能被 EOG／context 等改寫；
+                    // 因此不看最後停止原因，只保留起點還在保留文字內的 token（res->content 已接收 move 後的文字）。
+                    res->probs_output.clear();
+                    res->probs_output.reserve(slot.generated_token_probs.size());
+                    for (const auto & t : slot.generated_token_probs) {
+                        if (t.gen_begin < res->content.text.size()) {
+                            res->probs_output.push_back(t);
+                        }
+                    }
                 }
-                res->probs_output = std::vector<completion_token_output>(
-                        slot.generated_token_probs.begin(),
-                        slot.generated_token_probs.end() - safe_offset);
             } else {
                 res->probs_output = std::vector<completion_token_output>(
                         slot.generated_token_probs.begin(),
