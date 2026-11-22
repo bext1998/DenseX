@@ -144,6 +144,11 @@ int main(int argc, char ** argv) {
     // load only the vocabulary (no weights), since tokenizing does not need them
     llama_model_params model_params = llama_model_default_params();
     model_params.vocab_only = true;
+    // 讓 --override-kv 和 server 一樣生效；否則 vocab-only 測試無法驗證 metadata 覆寫。
+    if (!params.kv_overrides.empty()) {
+        GGML_ASSERT(params.kv_overrides.back().key[0] == 0 && "KV overrides not terminated with empty key");
+        model_params.kv_overrides = params.kv_overrides.data();
+    }
     llama_model * model = llama_model_load_from_file(params.model.path.c_str(), model_params);
     if (!model) {
         LOG_ERR("error: could not load model from file '%s'.\n", params.model.path.c_str());

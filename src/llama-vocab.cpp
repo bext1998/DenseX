@@ -23,21 +23,17 @@
 #include <unordered_map>
 
 // NFC 正規化 UTF-8 字串；純 ASCII 直接跳過，避免一般英文/程式碼多走一次 Unicode 轉換。
-// 輸入不是合法 UTF-8 時保留原字串，讓後續分詞維持原本的錯誤處理。
+// 無效 UTF-8 位元組由 unicode_cpts_from_utf8 轉成 U+FFFD，和原本 BPE regex split 的解碼行為相同。
 static std::string unicode_nfc_normalize(const std::string & text) {
     if (std::all_of(text.begin(), text.end(), [](unsigned char c) { return c < 0x80; })) {
         return text;
     }
-    try {
-        std::string result;
-        result.reserve(text.size());
-        for (const uint32_t cpt : unicode_cpts_normalize_nfc(unicode_cpts_from_utf8(text))) {
-            result += unicode_cpt_to_utf8(cpt);
-        }
-        return result;
-    } catch (const std::invalid_argument &) {
-        return text;
+    std::string result;
+    result.reserve(text.size());
+    for (const uint32_t cpt : unicode_cpts_normalize_nfc(unicode_cpts_from_utf8(text))) {
+        result += unicode_cpt_to_utf8(cpt);
     }
+    return result;
 }
 
 //
@@ -2083,6 +2079,9 @@ private:
 void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
     struct gguf_context * ctx = ml.metadata;
 
+    // 是否真的從檔案或 --override-kv 取得 normalizer.nfc；後面 qwen35 預設要用。
+    bool has_normalizer_nfc = false;
+
     // determine vocab type
     {
         ml.get_key(LLM_KV_TOKENIZER_MODEL, tokenizer_model);
@@ -2810,7 +2809,7 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
         }
 
         // Tokenizer normalizer options
-        ml.get_key(LLM_KV_TOKENIZER_NORMALIZER_NFC, normalizer_opts.nfc, false);
+        has_normalizer_nfc = ml.get_key(LLM_KV_TOKENIZER_NORMALIZER_NFC, normalizer_opts.nfc, false);
         ml.get_key(LLM_KV_TOKENIZER_NORMALIZER_LOWERCASE,     normalizer_opts.lowercase,     false);
         normalizer_opts.strip_accents = normalizer_opts.lowercase;
         ml.get_key(LLM_KV_TOKENIZER_NORMALIZER_STRIP_ACCENTS, normalizer_opts.strip_accents, false);
@@ -3257,9 +3256,10 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
         ml.get_key(LLM_KV_GENERAL_ARCHITECTURE, general_arch, false);
         // qwen35 是 DenseX 唯一支援的架構；GGUF 沒有 normalizer 鍵時，官方 Qwen 3.8
         // tokenizer 宣告的是 NFC。明確寫 false 的鍵仍然優先，不覆寫。
-        if (general_arch == "qwen35" && gguf_find_key(ctx, kv(LLM_KV_TOKENIZER_NORMALIZER_NFC).c_str()) == -1) {
+        // 只在 BPE（gpt2）且沒有檔案鍵／override 時才套 qwen35 預設；UGM（例如 t5）維持原本行為。
+        if (general_arch == "qwen35" && tokenizer_model == "gpt2" && !has_normalizer_nfc) {
             normalizer_opts.nfc = true;
-            LLAMA_LOG_INFO("%s: qwen35 has no tokenizer.ggml.normalizer.nfc key; enabling NFC by default\n", __func__);
+            LLAMA_LOG_INFO("%s: qwen35 BPE has no tokenizer.ggml.normalizer.nfc key; enabling NFC by default\n", __func__);
         }
 
         // model name to lowercase
