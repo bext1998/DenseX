@@ -167,9 +167,25 @@ struct auto_place_estimate {
     double total_est_mib = 0.0;
 };
 
+bool check_no_remote_selectors(const common_params_model & m, const char * label) {
+    if (!m.url.empty() || !m.hf_repo.empty() || !m.hf_file.empty() || !m.docker_repo.empty()) {
+        LOG_ERR("densex-auto-place: error: --densex-auto-place only supports local -m model paths; remote selector set on %s (url/hf_repo/hf_file/docker_repo)\n", label);
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 bool densex_auto_place_apply(common_params & params) {
+    if (!check_no_remote_selectors(params.model, "main model") ||
+        !check_no_remote_selectors(params.speculative.draft.mparams, "draft model")) {
+        return false;
+    }
+    if (!params.models_dir.empty() || !params.models_preset.empty() || !params.models_preset_hf.empty()) {
+        LOG_ERR("densex-auto-place: error: --densex-auto-place does not support router/preset model selectors (models_dir/models_preset/models_preset_hf)\n");
+        return false;
+    }
     if (params.model.path.empty()) {
         LOG_ERR("densex-auto-place: error: --densex-auto-place currently only supports local -m model paths (remote -hf/preset is not supported)\n");
         return false;
