@@ -31,13 +31,16 @@ constexpr double DENSEX_M_SAFE_MIB = 300.0;
 // 較高 KV 格式若需移出超過 24 層 FFN，降級為 K4V4 以免 PCIe 串流過慢（AGY_36_VRAM_PLANNER_REPORT.md §4.2）
 constexpr int DENSEX_N_KV_SWITCH = 24;
 
-// 讀取 uint32_t 類型的 GGUF metadata（支援 u32 / i32）
+// 讀取整數類型的 GGUF metadata（支援 u16 / u32 / i32）
 int32_t get_gguf_i32(const struct gguf_context * ctx, const char * key, int32_t fallback) {
     const int64_t idx = gguf_find_key(ctx, key);
     if (idx < 0) {
         return fallback;
     }
     const enum gguf_type t = gguf_get_kv_type(ctx, idx);
+    if (t == GGUF_TYPE_UINT16) {
+        return (int32_t) gguf_get_val_u16(ctx, idx);
+    }
     if (t == GGUF_TYPE_UINT32) {
         return (int32_t) gguf_get_val_u32(ctx, idx);
     }
@@ -45,6 +48,18 @@ int32_t get_gguf_i32(const struct gguf_context * ctx, const char * key, int32_t 
         return gguf_get_val_i32(ctx, idx);
     }
     return fallback;
+}
+
+// 依 ggml-backend.cpp:2338-2339 規則解析預取槽數（上限 8，0 代表關閉）
+int resolve_prefetch_slots(int n_offload) {
+    if (n_offload <= 0) {
+        return 0;
+    }
+    const char * env = std::getenv("GGML_SCHED_PREFETCH");
+    if (env != nullptr && env[0] != '\0') {
+        return std::clamp(std::atoi(env), 0, 8);
+    }
+    return 4;
 }
 
 // 解析 blk.<idx>.ffn_(gate|up|down).weight 的層編號；非 FFN 權重回傳 -1
@@ -156,7 +171,7 @@ struct auto_place_estimate {
 
 bool densex_auto_place_apply(common_params & params) {
     if (params.model.path.empty()) {
-        LOG_ERR("densex-auto-place: error: model path is empty\n");
+        LOG_ERR("densex-auto-place: error: --densex-auto-place currently only supports local -m model paths (remote -hf/preset is not supported)\n");
         return false;
     }
 
@@ -168,6 +183,14 @@ bool densex_auto_place_apply(common_params & params) {
         return false;
     }
 
+    const int32_t main_split_count = get_gguf_i32(ctx_main, "split.count", 1);
+    if (main_split_count > 1) {
+        gguf_free(ctx_main);
+        LOG_ERR("densex-auto-place: error: split GGUF (split.count=%d) is not supported for main model; use manual -ot instead\n",
+                main_split_count);
+        return false;
+    }
+
     const int32_t block_count = get_gguf_i32(ctx_main, "qwen35.block_count", 64);
     const int32_t nextn_layers = get_gguf_i32(ctx_main, "qwen35.nextn_predict_layers", 0);
     const int32_t n_trunk = std::max(1, block_count - nextn_layers);
@@ -175,6 +198,7 @@ bool densex_auto_place_apply(common_params & params) {
     const int32_t n_full_attn = std::max(1, n_trunk / full_attn_interval);
     const int32_t n_head_kv = std::max(1, get_gguf_i32(ctx_main, "qwen35.attention.head_count_kv", 4));
     const int32_t head_dim = std::max(1, get_gguf_i32(ctx_main, "qwen35.attention.key_length", 256));
+    const int32_t n_ctx_train = std::max(256, get_gguf_i32(ctx_main, "qwen35.context_length", 262144));
 
     double w_trunk_bytes = 0.0;
     double w_mtp_bytes = 0.0;
@@ -201,8 +225,9 @@ bool densex_auto_place_apply(common_params & params) {
     }
     gguf_free(ctx_main);
 
-    // 2. 計算草稿模型權重與草稿 KV
-    const uint32_t n_ctx = params.n_ctx > 0 ? (uint32_t) params.n_ctx : 131072u;
+    // 2. 計算草稿模型權重與草稿 KV（n_ctx<=0 取 n_ctx_train 並依 src/llama-context.cpp:351 對齊 256）
+    const uint32_t raw_ctx = params.n_ctx > 0 ? (uint32_t) params.n_ctx : (uint32_t) n_ctx_train;
+    const uint32_t n_ctx = ((raw_ctx + 255u) / 256u) * 256u;
     const bool has_dft_model = params.speculative.has_dft();
     const bool has_mtp = std::find(params.speculative.types.begin(), params.speculative.types.end(),
         COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params.speculative.types.end();
@@ -215,6 +240,13 @@ bool densex_auto_place_apply(common_params & params) {
         struct gguf_context * ctx_dft = gguf_init_from_file(params.speculative.draft.mparams.path.c_str(), gparams);
         if (ctx_dft == nullptr) {
             LOG_ERR("densex-auto-place: error: failed to open draft GGUF '%s'\n", params.speculative.draft.mparams.path.c_str());
+            return false;
+        }
+        const int32_t dft_split_count = get_gguf_i32(ctx_dft, "split.count", 1);
+        if (dft_split_count > 1) {
+            gguf_free(ctx_dft);
+            LOG_ERR("densex-auto-place: error: split GGUF (split.count=%d) is not supported for draft model; use manual -ot instead\n",
+                    dft_split_count);
             return false;
         }
         const int64_t n_dft_tensors = gguf_get_n_tensors(ctx_dft);
@@ -282,7 +314,7 @@ bool densex_auto_place_apply(common_params & params) {
                 sum_bytes += ffn_layer_bytes[(size_t) l];
             }
             e.ffn_offload_mib = sum_bytes / MIB;
-            e.prefetch_mib = 4.0 * prefetch_per_slot_mib;
+            e.prefetch_mib = (double) resolve_prefetch_slots(n_offload) * prefetch_per_slot_mib;
         }
         e.kv_main_mib = (double) n_full_attn * (double) n_head_kv * (double) head_dim *
                         (bytes_per_elem(ctk) + bytes_per_elem(ctv)) * (double) n_ctx / MIB;
@@ -304,10 +336,10 @@ bool densex_auto_place_apply(common_params & params) {
     if (placement_locked) {
         LOG_INF("densex-auto-place: keeping user placement (-ot/-ngl); skipping auto placement\n");
         const auto_place_estimate est = eval_config(0, params.cache_type_k, params.cache_type_v);
-        LOG_INF("densex-auto-place: selected N=%d kv=%s/%s | W_trunk=%.1f W_draft=%.1f FFN_offload=%.1f KV_main=%.1f KV_draft=%.1f Prefetch=%.1f OH=%.1f -> est=%.1f MiB / budget=%.1f MiB (total=%.1f, M_safe=%.1f)\n",
-                est.n, ggml_type_name(est.ctk), ggml_type_name(est.ctv),
-                est.w_trunk_mib, est.w_draft_mib, est.ffn_offload_mib,
-                est.kv_main_mib, est.kv_draft_mib, est.prefetch_mib, est.oh_mib,
+        LOG_INF("densex-auto-place: skipped (manual -ot/-ngl) ctx=%u kv=%s/%s | W_trunk=%.1f W_draft=%.1f KV_main=%.1f KV_draft=%.1f OH=%.1f -> est_no_offload=%.1f MiB / budget=%.1f MiB (total=%.1f, M_safe=%.1f)\n",
+                n_ctx, ggml_type_name(est.ctk), ggml_type_name(est.ctv),
+                est.w_trunk_mib, est.w_draft_mib,
+                est.kv_main_mib, est.kv_draft_mib, est.oh_mib,
                 est.total_est_mib, budget_mib, vram_total_mib, DENSEX_M_SAFE_MIB);
         return true;
     }
@@ -368,8 +400,9 @@ bool densex_auto_place_apply(common_params & params) {
         return false;
     }
 
-    LOG_INF("densex-auto-place: selected N=%d kv=%s/%s | W_trunk=%.1f W_draft=%.1f FFN_offload=%.1f KV_main=%.1f KV_draft=%.1f Prefetch=%.1f OH=%.1f -> est=%.1f MiB / budget=%.1f MiB (total=%.1f, M_safe=%.1f)\n",
-            best.n, ggml_type_name(best.ctk), ggml_type_name(best.ctv),
+    const int used_slots = resolve_prefetch_slots(best.n);
+    LOG_INF("densex-auto-place: selected N=%d ctx=%u prefetch_slots=%d kv=%s/%s | W_trunk=%.1f W_draft=%.1f FFN_offload=%.1f KV_main=%.1f KV_draft=%.1f Prefetch=%.1f OH=%.1f -> est=%.1f MiB / budget=%.1f MiB (total=%.1f, M_safe=%.1f)\n",
+            best.n, n_ctx, used_slots, ggml_type_name(best.ctk), ggml_type_name(best.ctv),
             best.w_trunk_mib, best.w_draft_mib, best.ffn_offload_mib,
             best.kv_main_mib, best.kv_draft_mib, best.prefetch_mib, best.oh_mib,
             best.total_est_mib, budget_mib, vram_total_mib, DENSEX_M_SAFE_MIB);
@@ -378,7 +411,8 @@ bool densex_auto_place_apply(common_params & params) {
         return true;
     }
 
-    // 5. 套用配置至 params
+    // 5. 套用配置至 params（回寫對齊後的 n_ctx，確保 dry 與實際載入一致）
+    params.n_ctx = (int32_t) n_ctx;
     params.fit_params = false;
     params.n_gpu_layers = 999;
     params.cache_type_k = best.ctk;

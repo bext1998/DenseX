@@ -2847,14 +2847,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_examples({LLAMA_EXAMPLE_FIT_PARAMS}).set_env("LLAMA_ARG_FIT_ESTIMATE"));
     add_opt(common_arg(
         { "--densex-auto-place" },
-        "DenseX (#36): automatically select CPU FFN layers N and KV cache types from VRAM and ctx (default: off)",
+        "DenseX (#36): automatically select CPU FFN layers N and KV cache types from VRAM and ctx (default: off; local -m only, remote -hf/preset not supported)",
         [](common_params & params) {
             params.densex_auto_place = true;
         }
     ));
     add_opt(common_arg(
         { "--densex-auto-place-dry" },
-        "DenseX (#36): print auto-placement plan and exit without loading weights",
+        "DenseX (#36): print auto-placement plan and exit without loading weights (local -m only)",
         [](common_params & params) {
             params.densex_auto_place = true;
             params.densex_auto_place_dry = true;
