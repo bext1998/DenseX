@@ -8,6 +8,7 @@
 #include "arg.h"
 #include "build-info.h"
 #include "common.h"
+#include "densex-auto-place.h"
 #include "fit.h"
 #include "llama.h"
 #include "log.h"
@@ -128,6 +129,17 @@ int llama_server(int argc, char ** argv) {
 
     llama_backend_init();
     llama_numa_init(params.numa);
+
+    if (params.densex_auto_place) {
+        if (!densex_auto_place_apply(params)) {
+            common_log_flush(common_log_main());
+            return 1;
+        }
+        if (params.densex_auto_place_dry) {
+            common_log_flush(common_log_main());
+            return 0;
+        }
+    }
 
     const int result = llama_server(params, argc, argv, child);
     common_log_flush(common_log_main());

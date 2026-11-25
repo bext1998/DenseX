@@ -2395,6 +2395,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         ),
         [](common_params & params, const std::string & value) {
             params.cache_type_k = kv_cache_type_from_str(value);
+            params.densex_user_set_ctk = true;
         }
     ).set_env("LLAMA_ARG_CACHE_TYPE_K"));
     add_opt(common_arg(
@@ -2408,6 +2409,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         ),
         [](common_params & params, const std::string & value) {
             params.cache_type_v = kv_cache_type_from_str(value);
+            params.densex_user_set_ctv = true;
         }
     ).set_env("LLAMA_ARG_CACHE_TYPE_V"));
     add_opt(common_arg(
@@ -2693,6 +2695,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"-ot", "--override-tensor"}, "<tensor name pattern>=<buffer type>,...",
         "override tensor buffer type", [](common_params & params, const std::string & value) {
             parse_tensor_buffer_overrides(value, params.tensor_buft_overrides);
+            params.densex_user_set_ot = true;
         }
     ).set_env("LLAMA_ARG_OVERRIDE_TENSOR"));
     add_opt(common_arg(
@@ -2738,6 +2741,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"-ngl", "--gpu-layers", "--n-gpu-layers"}, "N",
         string_format("max. number of layers to store in VRAM, either an exact number, 'auto', or 'all' (default: %s)", params.n_gpu_layers == -1 ? "auto" : "all"),
         [](common_params & params, const std::string & value) {
+            params.densex_user_set_ngl = true;
             if (value == "auto") {
                 params.n_gpu_layers = -1;
             } else if (value == "all") {
@@ -2841,6 +2845,21 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             }
         }
     ).set_examples({LLAMA_EXAMPLE_FIT_PARAMS}).set_env("LLAMA_ARG_FIT_ESTIMATE"));
+    add_opt(common_arg(
+        { "--densex-auto-place" },
+        "DenseX (#36): automatically select CPU FFN layers N and KV cache types from VRAM and ctx (default: off)",
+        [](common_params & params) {
+            params.densex_auto_place = true;
+        }
+    ));
+    add_opt(common_arg(
+        { "--densex-auto-place-dry" },
+        "DenseX (#36): print auto-placement plan and exit without loading weights",
+        [](common_params & params) {
+            params.densex_auto_place = true;
+            params.densex_auto_place_dry = true;
+        }
+    ));
     add_opt(common_arg(
         { "-fitt", "--fit-target" }, "MiB0,MiB1,MiB2,...",
         string_format("target margin per device for --fit, comma-separated list of values, "

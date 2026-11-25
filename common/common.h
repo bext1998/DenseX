@@ -485,6 +485,14 @@ struct common_params {
     bool    fit_params         = true;  // whether to fit unset model/context parameters to free device memory
     bool    fit_params_print   = false; // print the estimated required memory to run the model
     int32_t fit_params_min_ctx = 4096;  // minimum context size to set when trying to reduce memory use
+    // DenseX (#36): 依顯存自動決定放置，預設關閉
+    bool    densex_auto_place     = false;
+    bool    densex_auto_place_dry = false;
+    bool    densex_user_set_ot    = false;
+    bool    densex_user_set_ngl   = false;
+    bool    densex_user_set_ctk   = false;
+    bool    densex_user_set_ctv   = false;
+    std::string densex_auto_place_ot_pattern;
 
     // margin per device in bytes for fitting parameters to free memory:
     std::vector<size_t> fit_params_target = std::vector<size_t>(llama_max_devices(), 1024 * 1024*1024);

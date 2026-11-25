@@ -78,6 +78,8 @@ add_library(${TARGET}
     download.h
     fit.cpp
     fit.h
+    densex-auto-place.cpp
+    densex-auto-place.h
     hf-cache.cpp
     hf-cache.h
     http.h
