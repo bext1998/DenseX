@@ -22,6 +22,7 @@ enum densex_draft_explicit_flag : uint32_t {
     DENSEX_DRAFT_EXPLICIT_TYPE_V    = 1u << 5, // --spec-draft-type-v / -ctvd
     DENSEX_DRAFT_EXPLICIT_KV_WINDOW = 1u << 6, // --spec-draft-kv-window
     DENSEX_DRAFT_EXPLICIT_VOCAB     = 1u << 7, // DENSEX_DRAFT_VOCAB / DENSEX_DRAFT_VOCAB_ORDER（環境變數）
+    DENSEX_DRAFT_EXPLICIT_OTHER     = 1u << 8, // 其他任何標了 is_spec 的選項（由參數解析統一標記）
 };
 
 bool densex_auto_draft_apply(common_params & params);

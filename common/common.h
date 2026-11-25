@@ -498,6 +498,7 @@ struct common_params {
     bool     densex_auto_draft_dry = false;
     // 使用者明確指定了哪些草稿參數（位元見 common/densex-auto-draft.h），任一非 0 就跳過自動草稿
     uint32_t densex_draft_explicit = 0;
+    std::string densex_draft_explicit_opt; // 最後一個觸發遮罩的選項名稱（#75 F6：log 用）
 
     // margin per device in bytes for fitting parameters to free memory:
     std::vector<size_t> fit_params_target = std::vector<size_t>(llama_max_devices(), 1024 * 1024*1024);

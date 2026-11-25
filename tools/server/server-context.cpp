@@ -13,8 +13,6 @@
 
 #include "build-info.h"
 #include "common.h"
-#include "densex-auto-draft.h"
-#include "densex-auto-place.h"
 #include "fit.h"
 #include "llama.h"
 #include "log.h"
@@ -1320,13 +1318,8 @@ private:
         const bool is_resume = sleeping;
 
         params_base = params;
-        // DenseX (#75): 草稿先決定（在工作副本上），auto-place 才看得到含草稿的計帳；換模型／sleep 醒來會重新選。
-        if (params_base.densex_auto_draft && !densex_auto_draft_apply(params_base)) {
-            return false;
-        }
-        if (params_base.densex_auto_place && !densex_auto_place_apply(params_base)) {
-            return false;
-        }
+        // DenseX (#75): 草稿與放置已在 server.cpp 的 wrapper 套用（models handler／下載／ctx pool 之前），
+        // 這裡只留 has_draft 讀工作副本；sleep 回來的 params_base 已是套用後的參數，冪等。
         const auto output_limits = server_output_limits(params_base);
         params_base.n_outputs_max = output_limits.total;
         params_base.n_outputs_max_per_seq = output_limits.per_seq;

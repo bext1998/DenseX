@@ -9,9 +9,10 @@
 //   quantized_by/repo_url、block_count=65 且 nextn_predict_layers=1、15 個 blk.64 nextn 張量齊全、
 //   以及整個張量型別指紋（IQ2_XS 檔會差在 type 19/21/29 的張量數，因此不會命中）。
 //   general.file_type 不可靠（IQ3_XXS 檔寫 26=IQ3_S），只記錄不用於比對。
-// 草稿檔：只在本機既有相對位置找（主模型目錄與其上層最多 4 層：
+// 草稿檔：只在本機既有相對位置找（主模型目錄與其上層最多 4 層（含本層）：
 //   <dir>/Qwen3.8-27B-DFlash2-Q4_K_M.gguf、<dir>/DFlash2-Qwen3.8-27B/Qwen3.8-27B-DFlash2-Q4_K_M.gguf），
-//   並再讀一次草稿檔標頭確認為 dflash 架構；找不到或不符就 WARN，參數不動，絕不下載。
+//   裸檔名先以目前工作目錄正規化；找到後再讀標頭確認為已測 Q4_K_M（arch/name/split、81 張量、
+//   型別計數 {0:32,12:45,14:4}）；找不到或不符就 WARN，參數不動，絕不下載。
 
 #include "densex-auto-draft.h"
 
@@ -171,32 +172,61 @@ bool is_ista_iq3xxs_mtp(const gguf_header & h) {
     return true;
 }
 
+// 已測 Q4_K_M 草稿的張量目錄：81 個張量、型別計數 {0:32, 12:45, 14:4}（.tmp/cx75_gguf_headers_v2.json）
+constexpr int DENSEX_DFLASH2_TENSOR_COUNT = 81;
+const type_count DENSEX_DFLASH2_TYPES[] = { { 0, 32 }, { 12, 45 }, { 14, 4 } };
+
 bool is_dflash_sidecar(const std::string & path) {
     gguf_header h;
-    if (!read_header(path, h)) {
+    if (!read_header(path, h) || h.arch != DENSEX_DFLASH2_ARCH || h.name != DENSEX_DFLASH2_NAME || h.split_count != 1) {
         return false;
     }
-    return h.arch == DENSEX_DFLASH2_ARCH && h.name == DENSEX_DFLASH2_NAME && h.split_count == 1;
+    int total = 0;
+    for (const auto & kv : h.tensor_types) {
+        total += kv.second;
+    }
+    if (total != DENSEX_DFLASH2_TENSOR_COUNT || (int) h.tensor_types.size() != 3) {
+        return false;
+    }
+    for (const type_count & e : DENSEX_DFLASH2_TYPES) {
+        const auto it = h.tensor_types.find(e.type);
+        if (it == h.tensor_types.end() || it->second != e.count) {
+            return false;
+        }
+    }
+    return true;
 }
 
-// 主模型目錄與其上層最多 4 層，只找兩個既有相對位置；不下載、不接受 GGUF 內的字串當路徑
+// 主模型目錄與其上層最多 4 層（含本層），只找兩個既有相對位置；不下載、不接受 GGUF 內的字串當路徑。
+// 裸檔名（parent_path 為空）先正規化成目前工作目錄，避免等價寫法得到不同決策（#75 F3）。
 bool find_sidecar(const std::string & main_path, std::string & out) {
     std::error_code ec;
-    fs::path dir = fs::path(main_path).parent_path();
+    fs::path abs = fs::absolute(fs::path(main_path), ec);
+    if (ec) {
+        abs = fs::path(main_path);
+    }
+    fs::path dir = abs.parent_path();
+    if (dir.empty()) {
+        dir = fs::current_path(ec);
+    }
     std::string searched;
-    for (int depth = 0; depth < 4; ++depth) {
-        if (dir.empty()) {
-            break;
-        }
+    std::string mismatch;
+    for (int depth = 0; depth < 4 && !dir.empty(); ++depth) {
         const fs::path candidates[2] = { dir / DENSEX_DFLASH2_FILE, dir / DENSEX_DFLASH2_DIR / DENSEX_DFLASH2_FILE };
         for (const fs::path & cand : candidates) {
             if (!searched.empty()) {
                 searched += ",";
             }
             searched += cand.string();
-            if (fs::is_regular_file(cand, ec) && !ec && is_dflash_sidecar(cand.string())) {
+            if (!fs::is_regular_file(cand, ec) || ec) {
+                continue;
+            }
+            if (is_dflash_sidecar(cand.string())) {
                 out = cand.string();
                 return true;
+            }
+            if (mismatch.empty()) {
+                mismatch = cand.string();
             }
         }
         const fs::path parent = dir.parent_path();
@@ -204,6 +234,11 @@ bool find_sidecar(const std::string & main_path, std::string & out) {
             break;
         }
         dir = parent;
+    }
+    if (!mismatch.empty()) {
+        LOG_WRN("densex-auto-draft: warning: profile=%s source=auto reason=sidecar-mismatch path=%s searched=%s\n",
+                DENSEX_AUTO_DRAFT_PROFILE, mismatch.c_str(), searched.c_str());
+        return false;
     }
     LOG_WRN("densex-auto-draft: warning: profile=%s source=auto reason=sidecar-missing searched=%s\n",
             DENSEX_AUTO_DRAFT_PROFILE, searched.c_str());
@@ -234,6 +269,7 @@ std::string describe_explicit(uint32_t mask) {
         { DENSEX_DRAFT_EXPLICIT_TYPE_V,    "spec-draft-type-v" },
         { DENSEX_DRAFT_EXPLICIT_KV_WINDOW, "spec-draft-kv-window" },
         { DENSEX_DRAFT_EXPLICIT_VOCAB,     "densex-draft-vocab-env" },
+        { DENSEX_DRAFT_EXPLICIT_OTHER,     "other" },
     };
     std::string out;
     for (const bit_name & b : names) {
@@ -250,11 +286,13 @@ std::string describe_explicit(uint32_t mask) {
 } // namespace
 
 bool densex_auto_draft_apply(common_params & params) {
-    // 1. 明確指定一律優先：CLI／環境變數／設定檔任一草稿參數就整套跳過
+    // 1. 明確指定一律優先：CLI／環境變數／設定檔任一投機解碼相關參數就整套跳過（#75 F1）
     const uint32_t explicit_mask = params.densex_draft_explicit | env_explicit_flags();
     if (explicit_mask != 0) {
-        LOG_INF("densex-auto-draft: profile=none source=explicit reason=%s mask=0x%x auto_applied=false\n",
-                describe_explicit(explicit_mask).c_str(), explicit_mask);
+        LOG_INF("densex-auto-draft: profile=none source=explicit reason=%s option=%s mask=0x%x auto_applied=false\n",
+                describe_explicit(explicit_mask).c_str(),
+                params.densex_draft_explicit_opt.empty() ? "-" : params.densex_draft_explicit_opt.c_str(),
+                explicit_mask);
         return true;
     }
 

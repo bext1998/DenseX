@@ -131,19 +131,18 @@ int llama_server(int argc, char ** argv) {
     llama_backend_init();
     llama_numa_init(params.numa);
 
-    // DenseX (#75): dry 模式只印決策、不載入權重。草稿一定先決定，auto-place 才看得到含草稿的計帳；
-    // 非 dry 的實際套用點在 server-context.cpp 的 load_model（涵蓋 sleep/resume 與換模型）。
-    const bool densex_dry = (params.densex_auto_draft && params.densex_auto_draft_dry) ||
-                            (params.densex_auto_place  && params.densex_auto_place_dry);
-    if (densex_dry) {
-        if (params.densex_auto_draft && !densex_auto_draft_apply(params)) {
-            common_log_flush(common_log_main());
-            return 1;
-        }
-        if (params.densex_auto_place && !densex_auto_place_apply(params)) {
-            common_log_flush(common_log_main());
-            return 1;
-        }
+    // DenseX (#75): 草稿先決定，再交給 auto-place 規劃。兩者都在 models handler、下載與 ctx pool 之前
+    // 套用到同一份 params，所以 dry 與正常載入看到的是同一份規劃輸入（F2），遠端來源也會在任何下載前被拒絕（F5）。
+    if (params.densex_auto_draft && !densex_auto_draft_apply(params)) {
+        common_log_flush(common_log_main());
+        return 1;
+    }
+    if (params.densex_auto_place && !densex_auto_place_apply(params)) {
+        common_log_flush(common_log_main());
+        return 1;
+    }
+    if ((params.densex_auto_draft && params.densex_auto_draft_dry) ||
+        (params.densex_auto_place  && params.densex_auto_place_dry)) {
         common_log_flush(common_log_main());
         return 0;
     }

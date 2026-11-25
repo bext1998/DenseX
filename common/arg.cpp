@@ -111,6 +111,14 @@ common_arg & common_arg::set_spec() {
     return *this;
 }
 
+void common_arg::mark_densex_draft_explicit(common_params & params, const std::string & source) const {
+    if (!is_spec) {
+        return;
+    }
+    params.densex_draft_explicit |= DENSEX_DRAFT_EXPLICIT_OTHER;
+    params.densex_draft_explicit_opt = source;
+}
+
 common_arg & common_arg::set_preset_only() {
     is_preset_only = true;
     return *this;
@@ -756,6 +764,7 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
     for (auto & opt : ctx_arg.options) {
         std::string value;
         if (opt.get_value_from_env(value)) {
+            opt.mark_densex_draft_explicit(params, "env:" + std::string(opt.env ? opt.env : "?"));
             try {
                 if (opt.handler_void && is_truthy(value)) {
                     opt.handler_void(params);
@@ -807,6 +816,7 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
             auto & tmp = arg_to_options[arg];
             auto opt = *tmp.first;
             bool is_positive = tmp.second;
+            opt.mark_densex_draft_explicit(params, "cli:" + arg);
             if (opt.has_value_from_env()) {
                 fprintf(stderr, "warn: %s environment variable is set, but will be overwritten by command line argument %s\n", opt.env, arg.c_str());
             }
@@ -1578,14 +1588,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) {
             params.speculative.ngram_cache.lookup_cache_static = value;
         }
-    ).set_examples({LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER}));
+    ).set_spec().set_examples({LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
         {"-lcd", "--lookup-cache-dynamic"}, "FNAME",
         "path to dynamic lookup cache to use for lookup decoding (updated by generation)",
         [](common_params & params, const std::string & value) {
             params.speculative.ngram_cache.lookup_cache_dynamic = value;
         }
-    ).set_examples({LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER}));
+    ).set_spec().set_examples({LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
         {"-c", "--ctx-size"}, "N",
         string_format("size of the prompt context (default: %d, 0 = loaded from model)", params.n_ctx),
@@ -4140,7 +4150,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.speculative.draft.cache_type_k = kv_cache_type_from_str(value);
             params.densex_draft_explicit |= DENSEX_DRAFT_EXPLICIT_TYPE_K; // #75: 明確指定就跳過自動草稿
         }
-    ).set_env("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K"));
+    ).set_spec().set_env("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K"));
     add_opt(common_arg(
         {"--spec-draft-type-v", "-ctvd", "--cache-type-v-draft"}, "TYPE",
         string_format(
@@ -4154,7 +4164,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.speculative.draft.cache_type_v = kv_cache_type_from_str(value);
             params.densex_draft_explicit |= DENSEX_DRAFT_EXPLICIT_TYPE_V; // #75
         }
-    ).set_env("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V"));
+    ).set_spec().set_env("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V"));
     add_opt(common_arg(
         {"--spec-draft-override-tensor", "-otd", "--override-tensor-draft"}, "<tensor name pattern>=<buffer type>,...",
         "override tensor buffer type for draft model", [](common_params & params, const std::string & value) {
@@ -4819,7 +4829,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             //params.speculative.ngram_map_k4v.size_m = 24;
             //params.speculative.ngram_map_k4v.min_hits = 2;
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
 
     return ctx_arg;
 }
@@ -4850,3 +4860,4 @@ void common_params_add_preset_options(std::vector<common_arg> & args) {
     //     [](common_params &) { /* unused */ }
     // ).set_preset_only());
 }
+

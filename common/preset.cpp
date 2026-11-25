@@ -146,6 +146,7 @@ void common_preset::apply_to_params(common_params & params, const std::set<std::
                 continue;
             }
         }
+        opt.mark_densex_draft_explicit(params, "preset:" + std::string(opt.env ? opt.env : "?"));
         // apply each option to params
         if (opt.handler_string) {
             opt.handler_string(params, val);

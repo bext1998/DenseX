@@ -39,6 +39,10 @@ struct common_arg {
 
     common_arg() = default;
 
+    // DenseX (#75): 由參數解析在實際呼叫 handler 前標記「使用者明確指定了投機解碼相關選項」，
+    // 自動草稿據此整套跳過（CLI、環境變數、設定檔三條路徑共用）。source 只給 log 用。
+    void mark_densex_draft_explicit(common_params & params, const std::string & source) const;
+
     common_arg(
         const std::initializer_list<const char *> & args,
         const char * value_hint,
