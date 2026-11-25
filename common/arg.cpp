@@ -3,6 +3,7 @@
 #include "build-info.h"
 #include "chat.h"
 #include "common.h"
+#include "densex-auto-draft.h"
 #include "download.h"
 #include "json-schema-to-grammar.h"
 #include "json.h"
@@ -2861,6 +2862,21 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ));
     add_opt(common_arg(
+        { "--densex-auto-draft" },
+        "DenseX (#75): apply a tested draft configuration when the main GGUF matches an exact tested profile (default: off; skipped when any draft option is set)",
+        [](common_params & params) {
+            params.densex_auto_draft = true;
+        }
+    ));
+    add_opt(common_arg(
+        { "--densex-auto-draft-dry" },
+        "DenseX (#75): print the auto-draft decision and exit without loading weights",
+        [](common_params & params) {
+            params.densex_auto_draft = true;
+            params.densex_auto_draft_dry = true;
+        }
+    ));
+    add_opt(common_arg(
         { "-fitt", "--fit-target" }, "MiB0,MiB1,MiB2,...",
         string_format("target margin per device for --fit, comma-separated list of values, "
             "single value is broadcast across all devices, default: %zu", params.fit_params_target[0]/(1024*1024)),
@@ -4122,6 +4138,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         ),
         [](common_params & params, const std::string & value) {
             params.speculative.draft.cache_type_k = kv_cache_type_from_str(value);
+            params.densex_draft_explicit |= DENSEX_DRAFT_EXPLICIT_TYPE_K; // #75: 明確指定就跳過自動草稿
         }
     ).set_env("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K"));
     add_opt(common_arg(
@@ -4135,6 +4152,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         ),
         [](common_params & params, const std::string & value) {
             params.speculative.draft.cache_type_v = kv_cache_type_from_str(value);
+            params.densex_draft_explicit |= DENSEX_DRAFT_EXPLICIT_TYPE_V; // #75
         }
     ).set_env("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V"));
     add_opt(common_arg(
@@ -4169,6 +4187,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 throw std::invalid_argument("invalid value");
             }
             params.speculative.draft.n_max = value;
+            params.densex_draft_explicit |= DENSEX_DRAFT_EXPLICIT_N_MAX; // #75
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_MAX"));
     add_opt(common_arg(
@@ -4176,6 +4195,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         string_format("minimum number of draft tokens to use for speculative decoding (default: %d)", params.speculative.draft.n_min),
         [](common_params & params, int value) {
             params.speculative.draft.n_min = value;
+            params.densex_draft_explicit |= DENSEX_DRAFT_EXPLICIT_N_MIN; // #75
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_MIN"));
     add_opt(common_arg(
@@ -4188,6 +4208,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 throw std::invalid_argument("--spec-draft-kv-window must be between 0 and UINT32_MAX");
             }
             params.speculative.draft.kv_window = static_cast<uint32_t>(window);
+            params.densex_draft_explicit |= DENSEX_DRAFT_EXPLICIT_KV_WINDOW; // #75
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_KV_WINDOW"));
     add_opt(common_arg(
@@ -4305,6 +4326,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) {
             params.speculative.draft.mparams.path = value;
             params.speculative.draft.mparams.hf_file = value; // will be used if --spec-draft-hf is set
+            params.densex_draft_explicit |= DENSEX_DRAFT_EXPLICIT_MODEL; // #75
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_IMATRIX}).set_env("LLAMA_ARG_SPEC_DRAFT_MODEL"));
     add_opt(common_arg(
@@ -4315,6 +4337,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             const auto types_str = string_split<std::string>(value, ',');
             auto types = common_speculative_types_from_names(types_str);
             params.speculative.types.insert(params.speculative.types.end(), types.begin(), types.end());
+            params.densex_draft_explicit |= DENSEX_DRAFT_EXPLICIT_TYPE; // #75: 含明確 --spec-type none
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_TYPE"));
     add_opt(common_arg(

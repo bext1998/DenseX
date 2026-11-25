@@ -493,6 +493,11 @@ struct common_params {
     bool    densex_user_set_ctk   = false;
     bool    densex_user_set_ctv   = false;
     std::string densex_auto_place_ot_pattern;
+    // DenseX (#75): 依主模型標頭自動決定草稿設定，預設關閉
+    bool     densex_auto_draft     = false;
+    bool     densex_auto_draft_dry = false;
+    // 使用者明確指定了哪些草稿參數（位元見 common/densex-auto-draft.h），任一非 0 就跳過自動草稿
+    uint32_t densex_draft_explicit = 0;
 
     // margin per device in bytes for fitting parameters to free memory:
     std::vector<size_t> fit_params_target = std::vector<size_t>(llama_max_devices(), 1024 * 1024*1024);

@@ -13,6 +13,8 @@
 
 #include "build-info.h"
 #include "common.h"
+#include "densex-auto-draft.h"
+#include "densex-auto-place.h"
 #include "fit.h"
 #include "llama.h"
 #include "log.h"
@@ -1318,12 +1320,19 @@ private:
         const bool is_resume = sleeping;
 
         params_base = params;
+        // DenseX (#75): 草稿先決定（在工作副本上），auto-place 才看得到含草稿的計帳；換模型／sleep 醒來會重新選。
+        if (params_base.densex_auto_draft && !densex_auto_draft_apply(params_base)) {
+            return false;
+        }
+        if (params_base.densex_auto_place && !densex_auto_place_apply(params_base)) {
+            return false;
+        }
         const auto output_limits = server_output_limits(params_base);
         params_base.n_outputs_max = output_limits.total;
         params_base.n_outputs_max_per_seq = output_limits.per_seq;
 
         const bool has_mmproj = !params.mmproj.path.empty();
-        const bool has_draft = params.speculative.has_dft();
+        const bool has_draft = params_base.speculative.has_dft();
         const bool spec_mtp = std::find(params_base.speculative.types.begin(),
                                         params_base.speculative.types.end(),
                                         COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params_base.speculative.types.end();
