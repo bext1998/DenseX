@@ -168,7 +168,7 @@ struct auto_place_estimate {
 };
 
 bool check_no_remote_selectors(const common_params_model & m, const char * label) {
-    if (!m.url.empty() || !m.hf_repo.empty() || !m.hf_file.empty() || !m.docker_repo.empty()) {
+    if (!m.url.empty() || !m.hf_repo.empty() || !m.docker_repo.empty() || (m.path.empty() && !m.hf_file.empty())) {
         LOG_ERR("densex-auto-place: error: --densex-auto-place only supports local -m model paths; remote selector set on %s (url/hf_repo/hf_file/docker_repo)\n", label);
         return false;
     }
