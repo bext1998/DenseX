@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "switches": {
+    "DENSEX_FA_DECODE_MMA": {
+      "default": true,
+      "field": "fa_decode_mma",
+      "file": "ggml/src/ggml-cuda/ggml-cuda.cu",
+      "expr": "fa_decode_mma == nullptr || atoi(fa_decode_mma) != 0"
+    },
+    "DENSEX_FA_DECODE_MMA_ADA": {
+      "default": false,
+      "field": "fa_decode_mma_ada",
+      "file": "ggml/src/ggml-cuda/ggml-cuda.cu",
+      "expr": "fa_mma_ada != nullptr && atoi(fa_mma_ada) != 0"
+    },
+    "DENSEX_MMQ_SLOTS": {
+      "default": true,
+      "field": "mmq_slots",
+      "file": "ggml/src/ggml-cuda/ggml-cuda.cu",
+      "expr": "mmq_slots == nullptr || atoi(mmq_slots) != 0"
+    },
+    "DENSEX_MMVQ_MAX": {
+      "default": -1,
+      "field": "mmvq_max",
+      "file": "ggml/src/ggml-cuda/ggml-cuda.cu",
+      "expr": "mmvq_max != nullptr ? atoi(mmvq_max) : -1"
+    },
+    "DENSEX_GRAPH_VERIFY": {
+      "default": false,
+      "field": "graph_verify",
+      "file": "ggml/src/ggml-cuda/ggml-cuda.cu",
+      "expr": "graph_verify != nullptr && atoi(graph_verify) != 0"
+    },
+    "DENSEX_GDN_DEFERRED": {
+      "default": -1,
+      "field": "gdn_deferred",
+      "file": "src/llama-densex-env.cpp",
+      "expr": "gdn_deferred == nullptr ? -1 : (atoi(gdn_deferred) != 0 ? 1 : 0)"
+    },
+    "DENSEX_DRAFT_VOCAB_ORDER": {
+      "default": "",
+      "field": "draft_vocab_order",
+      "file": "src/llama-densex-env.cpp",
+      "expr": "draft_vocab_order != nullptr ? std::string(draft_vocab_order) : std::string()"
+    },
+    "DENSEX_DRAFT_VOCAB": {
+      "default": 0,
+      "field": "draft_vocab",
+      "file": "src/llama-densex-env.cpp",
+      "expr": "draft_vocab != nullptr ? (int64_t) atoll(draft_vocab) : (int64_t) 0"
+    },
+    "DENSEX_KV_VMM": {
+      "default": false,
+      "field": "kv_vmm",
+      "file": "src/llama-densex-env.cpp",
+      "expr": "kv_vmm != nullptr && atoi(kv_vmm) != 0 ? 1 : 0"
+    },
+    "DENSEX_KV_LAZY": {
+      "default": false,
+      "field": "kv_lazy",
+      "file": "src/llama-densex-env.cpp",
+      "expr": "kv_lazy != nullptr && atoi(kv_lazy) != 0 ? 1 : 0"
+    },
+    "DENSEX_KV_LAZY_CELLS": {
+      "default": 8192,
+      "field": "kv_lazy_cells",
+      "file": "src/llama-densex-env.cpp",
+      "expr": "kv_lazy_cells != nullptr ? (int64_t) atoll(kv_lazy_cells) : (int64_t) 8192"
+    },
+    "DENSEX_LOGITS_ARGMAX": {
+      "default": false,
+      "field": "__return__",
+      "file": "tools/server/server-context.cpp",
+      "expr": "e != nullptr && atoi(e) != 0"
+    }
+  }
+}

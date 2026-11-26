@@ -23,6 +23,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Set up Python (env-default snapshot)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: DENSEX env-default snapshot
+        run: python scripts/densex_env_snapshot.py --check
+
       - name: Configure (CPU only)
         run: >
           cmake -S . -B build -G "Visual Studio 17 2022" -A x64
@@ -93,3 +101,38 @@ jobs:
         env:
           DENSEX_GDN_DEFERRED: "0"
         run: build/bin/Release/test-llama-context.exe --models qwen-models --test ".*" -ngl 0 --fit off
+
+  cuda-compile:
+    # Compile-only CUDA job. GitHub's Windows runners have no GPU; this job never
+    # runs a CUDA kernel, it only proves sm86/sm89 compile and that the CUDA
+    # backend/server targets still build.
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install CUDA Toolkit 12.8.0 (pinned, compile only)
+        # Jimver/cuda-toolkit@v0.2.20's windows-links.ts only knows up to 12.8.0;
+        # CUDA 13.0 is not selectable by this pinned action yet. Keep 12.8.0 and
+        # treat this job as a compile/syntax smoke, not an exact local-13.0 mirror.
+        uses: Jimver/cuda-toolkit@v0.2.20
+        with:
+          cuda: '12.8.0'
+          method: 'network'
+          # Only the compiler/runtime/headers needed by ggml-cuda + llama-server;
+          # the full toolkit otherwise exhausts the ~14 GB Windows runner disk.
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "cccl", "visual_studio_integration"]'
+
+      - name: Configure (CUDA sm86;sm89, compile only)
+        shell: pwsh
+        run: |
+          cmake -S . -B build-cuda -G "Visual Studio 17 2022" -A x64 `
+            -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="86;89" `
+            -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_COMMON=ON `
+            -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_APP=OFF `
+            -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_LLGUIDANCE=OFF
+
+      - name: Build ggml-cuda and llama-server (no run)
+        shell: pwsh
+        run: |
+          cmake --build build-cuda --config Release --target ggml-cuda llama-server --parallel 2
