@@ -720,7 +720,13 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
                 }
             } else {
                 if (cc >= GGML_CUDA_CC_ADA_LOVELACE) {
-                    if (Q->ne[1] <= 2) {
+                    // DenseX (#90): Ada keeps the upstream vec kernel for 1-2 token decode. The FA1 MMA decode below
+                    // is untested on Ada, so it is opt-in there: DENSEX_FA_DECODE_MMA_ADA=1 (still needs native K/V
+                    // and DENSEX_FA_DECODE_MMA not set to 0). Single token only, as on Ampere.
+                    const ggml_cuda_densex_env & env = ggml_cuda_densex_env_get();
+                    const bool ada_fa1 = Q->ne[1] == 1 && env.fa_decode_mma_ada && env.fa_decode_mma &&
+                        ggml_cuda_fattn_mma_native_kv(cc, dst);
+                    if (Q->ne[1] <= 2 && !ada_fa1) {
                         return BEST_FATTN_KERNEL_VEC;
                     }
                 } else {

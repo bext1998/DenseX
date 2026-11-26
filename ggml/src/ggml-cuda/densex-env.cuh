@@ -5,6 +5,7 @@
 // depend on llama and the two environment layers are independent (llama layer: src/llama-densex-env.h).
 struct ggml_cuda_densex_env {
     bool fa_decode_mma; // DENSEX_FA_DECODE_MMA: unset -> true, otherwise atoi(env) != 0
+    bool fa_decode_mma_ada; // DENSEX_FA_DECODE_MMA_ADA: unset -> false, otherwise atoi(env) != 0 (#90 experiment)
     bool mmq_slots;     // DENSEX_MMQ_SLOTS:     unset -> true, otherwise atoi(env) != 0
     int  mmvq_max;      // DENSEX_MMVQ_MAX:      unset -> -1, otherwise atoi(env)
     bool graph_verify;  // DENSEX_GRAPH_VERIFY:  unset -> false, otherwise atoi(env) != 0

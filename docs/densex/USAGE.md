@@ -189,6 +189,7 @@ values can override them.
 | `GGML_OP_OFFLOAD_MIN_BATCH` | `32` | Minimum batch for GPU offload of otherwise host operations; `1` is required for the measured streamed decode path. |
 | `GGML_CUDA_FA_NATIVE_KV` | Off | `1` reads quantized K/V directly in the supported CUDA FlashAttention path, avoiding the full F16 staging copy. README reports about 500 MiB saved at 128K. |
 | `DENSEX_FA_DECODE_MMA` | On when native K/V is enabled and the path is eligible | `0` restores the single-token vector attention path. README reports +8% at 120K for the MMA path. |
+| `DENSEX_FA_DECODE_MMA_ADA` | Off | Experimental (#90): `1` lets RTX 40 (Ada, sm89) GPUs use the same single-token MMA decode path. Ada keeps the upstream vector path otherwise; not yet measured on Ada. |
 | `DENSEX_GDN_DEFERRED` | Automatic: on for dense `qwen35`, single sequence | Deferred commit of recurrent state during speculative verification; `0` restores snapshot rollback. Presets use `-np 1`. |
 | `--spec-draft-kv-window` | `0` (full draft context) | Limit MTP attention to the last N tokens with absolute positions; the MTP variant uses `32768`. Does not restrict target attention. MTP only: rejected together with a separate draft model. |
 | `DENSEX_DRAFT_VOCAB_ORDER` | Unset | TSV order for the shared output head; use the bundled Qwen frequency ranking. Reordering is in memory, not a model-file edit. MTP only: the engine refuses it when a separate draft model is loaded (the formal DFlash2 preset therefore sets neither variable). |

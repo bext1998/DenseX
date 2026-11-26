@@ -158,18 +158,20 @@ static bool ggml_cuda_env_set(const char * name) {
 const ggml_cuda_densex_env & ggml_cuda_densex_env_get() {
     static const ggml_cuda_densex_env env = [] {
         const char * fa_decode_mma = getenv("DENSEX_FA_DECODE_MMA");
+        const char * fa_mma_ada    = getenv("DENSEX_FA_DECODE_MMA_ADA");
         const char * mmq_slots     = getenv("DENSEX_MMQ_SLOTS");
         const char * mmvq_max      = getenv("DENSEX_MMVQ_MAX");
         const char * graph_verify  = getenv("DENSEX_GRAPH_VERIFY");
 
         ggml_cuda_densex_env e;
         e.fa_decode_mma = fa_decode_mma == nullptr || atoi(fa_decode_mma) != 0;
+        e.fa_decode_mma_ada = fa_mma_ada != nullptr && atoi(fa_mma_ada) != 0;
         e.mmq_slots     = mmq_slots     == nullptr || atoi(mmq_slots)     != 0;
         e.mmvq_max      = mmvq_max      != nullptr ? atoi(mmvq_max)       : -1;
         e.graph_verify  = graph_verify  != nullptr && atoi(graph_verify)  != 0;
 
-        GGML_LOG_INFO("densex env: FA_DECODE_MMA=%d MMQ_SLOTS=%d MMVQ_MAX=%d GRAPH_VERIFY=%d\n",
-            (int) e.fa_decode_mma, (int) e.mmq_slots, e.mmvq_max, (int) e.graph_verify);
+        GGML_LOG_INFO("densex env: FA_DECODE_MMA=%d FA_DECODE_MMA_ADA=%d MMQ_SLOTS=%d MMVQ_MAX=%d GRAPH_VERIFY=%d\n",
+            (int) e.fa_decode_mma, (int) e.fa_decode_mma_ada, (int) e.mmq_slots, e.mmvq_max, (int) e.graph_verify);
         return e;
     }();
     return env;
