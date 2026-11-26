@@ -121,7 +121,8 @@ jobs:
           method: 'network'
           # Only the compiler/runtime/headers needed by ggml-cuda + llama-server;
           # the full toolkit otherwise exhausts the ~14 GB Windows runner disk.
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "cccl", "visual_studio_integration"]'
+          # Windows CUDA 12.8 installer ships CCCL/CUB/Thrust headers under thrust_12.8 (not cccl_12.8).
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
 
       - name: Configure (CUDA sm86;sm89, compile only)
         shell: pwsh
