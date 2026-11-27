@@ -38,6 +38,7 @@ SITES = {
     "DENSEX_KV_LAZY": ("src/llama-densex-env.cpp", "kv_lazy"),
     "DENSEX_KV_LAZY_CELLS": ("src/llama-densex-env.cpp", "kv_lazy_cells"),
     "DENSEX_LOGITS_ARGMAX": ("tools/server/server-context.cpp", "__return__"),
+    "DENSEX_LATE_SYSTEM": ("common/chat.cpp", "late_system"),
 }
 SCAN_DIRS = ("src", "ggml", "common", "tools")
 SCAN_SUFFIXES = {".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp"}
