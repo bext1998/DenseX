@@ -44,3 +44,4 @@ test-gguf
 test-alloc
 test-tokenizer-0-qwen35
 test-tokenizer-0-qwen38
+test-qwen38-late-system

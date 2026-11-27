@@ -726,6 +726,72 @@ std::string common_chat_templates_source(const struct common_chat_templates * tm
     return tmpls->template_default->source();
 }
 
+// DenseX（issue #88）：chat 端的 DENSEX_* 開關單一讀取點。每次載入範本時讀一次（一次模型載入只有一次），
+// 值只用一次，所以不快取成 process 常數，測試才能在同一行程內切換開關。
+struct densex_chat_env {
+    bool late_system;
+};
+
+// 開關的原始值；nullptr＝沒設定（預設開）。停用時 log 要印實際值（非數字經 atoi 也算 0，訊息不能假裝是 0）。
+static const char * densex_chat_env_late_system_raw() {
+    return std::getenv("DENSEX_LATE_SYSTEM");
+}
+
+// 判斷規則跟其他 DENSEX_* 開關一致；這條就是 scripts/densex_env_snapshot.py 登記的預設值來源。
+static const densex_chat_env densex_chat_env_read() {
+    const char * late_system = std::getenv("DENSEX_LATE_SYSTEM");
+    densex_chat_env e;
+    e.late_system = late_system == nullptr || atoi(late_system) != 0;
+    return e;
+}
+
+bool densex_chat_template_late_system_enabled() {
+    return densex_chat_env_read().late_system;
+}
+
+// DenseX（issue #88）：Qwen 3.8 出廠範本對「不是第一則」的 system 訊息直接 raise_exception，工具鏈在中途
+// 插入 system 就會 500。這裡逐字比對那段分支（不用正則猜），換成就地渲染成獨立 system 回合；找不到就原樣返回。
+// 分支內 content 用 render_content(content, false, true)，跟開頭 system（範本第 70、78 行）完全一樣：第二參數
+// false 表示不參與 vision 計數，第三參數 is_system_content=true 才會擋 image／video。外面再套 {%- if content %}，
+// 空白的中途 system 不輸出空回合，也跟開頭 system 的守門一樣。
+static const std::string DENSEX_LATE_SYSTEM_RAISE_BRANCH =
+    "    {%- if message.role == \"system\" %}\n"
+    "        {%- if not loop.first %}\n"
+    "            {{- raise_exception('System message must be at the beginning.') }}\n"
+    "        {%- endif %}\n";
+
+static const std::string DENSEX_LATE_SYSTEM_INPLACE_BRANCH =
+    "    {%- if message.role == \"system\" %}\n"
+    "        {%- if not loop.first %}\n"
+    "            {%- set content = render_content(message.content, false, true)|trim %}\n"
+    "            {%- if content %}\n"
+    "                {{- '<|im_start|>' + message.role + '\\n' + content + '<|im_end|>' + '\\n' }}\n"
+    "            {%- endif %}\n"
+    "        {%- endif %}\n";
+
+bool densex_chat_template_fix_late_system(std::string & template_src) {
+    if (!densex_chat_template_late_system_enabled()) {
+        // 停用的 log 由 common_chat_templates_init 印一次（default 與 tool_use 兩份範本不會重複印）。
+        return false;
+    }
+    if (template_src.find(DENSEX_LATE_SYSTEM_RAISE_BRANCH) == std::string::npos) {
+        // 完全不相關的範本不污染 log（每個模型載入都會走到）；只有接近但比不中時才 INFO。
+        const bool near_miss = template_src.find("System message must be at the beginning.") != std::string::npos;
+        if (near_miss) {
+            LOG_INF("densex: late-system template patch not applied - the model template rejects late system"
+                    " messages but not with the exact branch this patch matches\n");
+        } else {
+            LOG_DBG("densex: late-system template patch not applied - no 'System message must be at the"
+                    " beginning.' branch in the model template\n");
+        }
+        return false;
+    }
+    string_replace_all(template_src, DENSEX_LATE_SYSTEM_RAISE_BRANCH, DENSEX_LATE_SYSTEM_INPLACE_BRANCH);
+    LOG_INF("densex: late-system template patch applied - a system message anywhere now renders as its own"
+            " system turn\n");
+    return true;
+}
+
 common_chat_templates_ptr common_chat_templates_init(const struct llama_model * model,
                                                      const std::string &        chat_template_override,
                                                      const std::string &        bos_token_override,
@@ -778,6 +844,20 @@ common_chat_templates_ptr common_chat_templates_init(const struct llama_model * 
                            "message['content']|length == 0) and (message['tool_calls'] is not defined or "
                            "message['tool_calls'] is none or message['tool_calls']|length == 0) %}",
                            "{%- if false %}");
+    }
+
+    // DenseX（issue #88）：只修模型內建的範本；使用者用 --chat-template／--chat-template-file 指定的內容不碰。
+    if (chat_template_override.empty()) {
+        if (densex_chat_template_late_system_enabled()) {
+            densex_chat_template_fix_late_system(default_template_src);
+            if (!template_tool_use_src.empty()) {
+                densex_chat_template_fix_late_system(template_tool_use_src);
+            }
+        } else {
+            const char * late_system = densex_chat_env_late_system_raw();
+            LOG_INF("densex: late-system template patch disabled by DENSEX_LATE_SYSTEM=%s - keeping the model"
+                    " template as shipped\n", late_system ? late_system : "");
+        }
     }
 
     std::string token_bos = bos_token_override;

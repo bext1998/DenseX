@@ -369,6 +369,12 @@ common_chat_templates_ptr common_chat_templates_init(const struct llama_model * 
 bool        common_chat_templates_was_explicit(const struct common_chat_templates * tmpls);
 std::string common_chat_templates_source(const struct common_chat_templates * tmpls, const std::string & variant = "");
 
+// DenseX（issue #88）：把模型內建範本裡拒絕「中途 system」的 raise 分支換成就地渲染成獨立 system 回合；
+// 找到並替換時回傳 true。DENSEX_LATE_SYSTEM=0 關掉（預設開）。使用者用 --chat-template／--chat-template-file
+// 指定的範本不會走到這裡。
+bool densex_chat_template_fix_late_system(std::string & tmpl);
+bool densex_chat_template_late_system_enabled();
+
 struct common_chat_params common_chat_templates_apply(const struct common_chat_templates *        tmpls,
                                                       const struct common_chat_templates_inputs & inputs);
 

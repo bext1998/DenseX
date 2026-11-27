@@ -72,6 +72,12 @@
       "field": "__return__",
       "file": "tools/server/server-context.cpp",
       "expr": "e != nullptr && atoi(e) != 0"
+    },
+    "DENSEX_LATE_SYSTEM": {
+      "default": true,
+      "field": "late_system",
+      "file": "common/chat.cpp",
+      "expr": "late_system == nullptr || atoi(late_system) != 0"
     }
   }
 }
