@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
 #include <cinttypes>
 #include <cstdlib>
 #include <exception>
@@ -3107,20 +3108,34 @@ private:
             return;
         }
         doc_cache_evict(done->path);
-        SRV_INF("document cache: async ready '%s' (%.1f MiB)\n", done->path.c_str(), double(done->bytes) / 1024 / 1024);
+        SRV_INF("document cache: async ready '%s' (%.1f MiB written in %.0f ms)\n", done->path.c_str(),
+                double(done->bytes) / 1024 / 1024, done->write_us / 1000.0);
     }
 
     bool doc_cache_capture(server_slot & slot, const std::string & path) {
         bool reserved = false;
         const int64_t start = ggml_time_us();
+        int64_t t_serialize = 0;
+        int64_t t_size      = 0;
+        int64_t t_spec      = 0;
+        int64_t t_copy      = 0;
+        int64_t t_alloc     = 0;
+        int64_t t_target    = 0;
+        int64_t t_draft     = 0;
         try {
             auto job = std::make_unique<server_doc_cache_job>();
             job->path = path;
             job->settings = doc_cache_settings_hash();
+            int64_t t_step = ggml_time_us();
             job->packed = slot.prompt.tokens.serialize();
+            t_serialize = ggml_time_us() - t_step;
+            t_step = ggml_time_us();
             const size_t n_target = llama_state_seq_get_size_ext(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
             const size_t n_draft = ctx_dft ? llama_state_seq_get_size_ext(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) : 0;
+            t_size = ggml_time_us() - t_step;
+            t_step = ggml_time_us();
             common_speculative_get_state(spec.get(), slot.id, job->spec);
+            t_spec = ggml_time_us() - t_step;
             // DenseX: checked accumulation includes the capture reservation, checkpoints and metadata slack.
             uint64_t bytes = 1024 * 1024;
             auto add = [&](uint64_t n) {
@@ -3145,21 +3160,43 @@ private:
                 return false;
             }
             reserved = true;
+            t_step = ggml_time_us();
             job->tokens = slot.prompt.tokens.get_tokens();
             job->checkpoints = slot.prompt.checkpoints;
+            t_copy = ggml_time_us() - t_step;
+            t_step = ggml_time_us();
             job->target.resize(n_target);
-            if (n_target == 0 || llama_state_seq_get_data_ext(ctx_tgt, job->target.data(), n_target, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) != n_target) {
+            if (n_target < sizeof(uint32_t) + sizeof(llama_seq_id)) {
+                throw std::runtime_error("target snapshot is too small");
+            }
+            t_alloc = ggml_time_us() - t_step;
+            t_step = ggml_time_us();
+            if (llama_state_seq_get_data_ext(ctx_tgt, job->target.data(), n_target, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) != n_target) {
                 throw std::runtime_error("incomplete target snapshot");
             }
+            t_target = ggml_time_us() - t_step;
+            // DenseX #88：get_data 的輸出開頭是 io magic 與 sequence id，存檔格式裡沒有這兩欄；先驗證序號，
+            // 佈局一變就放棄快取，而不是寫出一個讀不回來的檔。
+            llama_seq_id seq = -1;
+            std::memcpy(&seq, job->target.data() + sizeof(uint32_t), sizeof(seq));
+            if (seq != slot.id) {
+                throw std::runtime_error("unexpected host snapshot header");
+            }
+            job->target_offset = sizeof(uint32_t) + sizeof(llama_seq_id);
             if (ctx_dft) {
+                t_step = ggml_time_us();
                 job->draft.resize(n_draft);
                 if (llama_state_seq_get_data_ext(ctx_dft, job->draft.data(), n_draft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) != n_draft) {
                     throw std::runtime_error("incomplete draft snapshot");
                 }
+                t_draft = ggml_time_us() - t_step;
             }
             doc_cache_writer->submit(std::move(job));
-            SLT_INF(slot, "document cache: async captured '%s' (%.1f MiB reserved, %.0f ms), queued\n", path.c_str(),
-                    double(bytes) / 1024 / 1024, (ggml_time_us() - start) / 1000.0);
+            SLT_INF(slot, "document cache: async captured '%s' (%.1f MiB reserved, %.0f ms: serialize %.0f, size %.0f, target %.0f,"
+                    " alloc %.0f, draft %.0f, spec %.0f, copy %.0f), queued\n", path.c_str(),
+                    double(bytes) / 1024 / 1024, (ggml_time_us() - start) / 1000.0,
+                    t_serialize / 1000.0, t_size / 1000.0, t_target / 1000.0, t_alloc / 1000.0,
+                    t_draft / 1000.0, t_spec / 1000.0, t_copy / 1000.0);
             return true;
         } catch (const std::exception & err) {
             if (reserved) {
@@ -3192,26 +3229,43 @@ private:
         }
 
         const int64_t t_start = ggml_time_us();
+        int64_t t_serialize = 0;
+        int64_t t_state     = 0;
+        int64_t t_ckpt      = 0;
+        int64_t t_draft     = 0;
+        int64_t t_publish   = 0;
+        int64_t t_sidecar   = 0;
         const std::string tmp = path + ".tmp";
 
         std::vector<char> packed;
+        int64_t t_step = ggml_time_us();
         try {
             packed = slot.prompt.tokens.serialize();
         } catch (const std::exception & err) {
             SLT_WRN(slot, "document cache: cannot serialize the prompt: %s\n", err.what());
             return false;
         }
+        t_serialize = ggml_time_us() - t_step;
         GGML_ASSERT(packed.size() % sizeof(llama_token) == 0);
 
+        t_step = ggml_time_us();
         const size_t nwrite = llama_state_seq_save_file(ctx_tgt, tmp.c_str(), slot.id,
                 reinterpret_cast<const llama_token *>(packed.data()), packed.size() / sizeof(llama_token));
+        t_state = ggml_time_us() - t_step;
         size_t n_ckpt = 0;
         size_t n_dft  = 0;
-        if (nwrite == 0 || !save_slot_checkpoints(tmp, slot, n_ckpt) || !save_slot_draft(tmp, slot, n_dft)) {
+        t_step = ggml_time_us();
+        const bool ckpt_ok = save_slot_checkpoints(tmp, slot, n_ckpt);
+        t_ckpt = ggml_time_us() - t_step;
+        t_step = ggml_time_us();
+        const bool draft_ok = save_slot_draft(tmp, slot, n_dft);
+        t_draft = ggml_time_us() - t_step;
+        if (nwrite == 0 || !ckpt_ok || !draft_ok) {
             SLT_WRN(slot, "document cache: could not write '%s'\n", tmp.c_str());
             std::filesystem::remove(std::filesystem::u8path(tmp), ec);
             return false;
         }
+        t_step = ggml_time_us();
         // rename last: a half-written file must never be picked up by a later run
         std::filesystem::rename(std::filesystem::u8path(tmp), std::filesystem::u8path(path), ec);
         if (ec) {
@@ -3221,16 +3275,21 @@ private:
         }
 
         doc_cache_evict(path);
+        t_publish = ggml_time_us() - t_step;
 
         // sidecar with the token sequence: lets a later request for the same document (but another question) find
         // this entry as a prefix candidate. A failure here costs the prefix match, not the exact one.
+        t_step = ggml_time_us();
         if (!doc_cache_write_tokens(path, slot.prompt.tokens)) {
             SLT_WRN(slot, "document cache: could not write the token sidecar for '%s'\n", key.c_str());
         }
+        t_sidecar = ggml_time_us() - t_step;
 
-        SLT_INF(slot, "document cache: wrote '%s' (%zu tokens, %.1f MiB) in %.0f ms\n", key.c_str(),
+        SLT_INF(slot, "document cache: wrote '%s' (%zu tokens, %.1f MiB) in %.0f ms: serialize %.0f, state %.0f,"
+                " checkpoints %.0f, draft %.0f, publish %.0f, sidecar %.0f\n", key.c_str(),
                 slot.prompt.tokens.size(), (double) (nwrite + n_ckpt + n_dft) / 1024 / 1024,
-                (ggml_time_us() - t_start) / 1000.0);
+                (ggml_time_us() - t_start) / 1000.0, t_serialize / 1000.0, t_state / 1000.0,
+                t_ckpt / 1000.0, t_draft / 1000.0, t_publish / 1000.0, t_sidecar / 1000.0);
         return true;
     }
 
@@ -3273,7 +3332,7 @@ private:
         uint32_t magic = 0;
         std::ifstream header(std::filesystem::u8path(path), std::ios::binary);
         header.read(reinterpret_cast<char *>(&magic), sizeof(magic));
-        const bool detached = magic == server_doc_cache_writer::magic;
+        const bool detached = magic == server_doc_cache_writer::legacy_magic;
         if (detached) {
             // DenseX: RAM state blobs have their own layout; never pass them to the legacy file loader.
             try {

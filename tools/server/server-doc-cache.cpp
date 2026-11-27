@@ -53,32 +53,45 @@ void close_checked(std::ofstream & out) {
         throw std::runtime_error("incomplete write/flush/close");
     }
 }
+// DenseX #88：檔案佈局照抄 llama_state_seq_save_file（檔頭＋token blob＋state）與 server 既有的
+// checkpoint／draft 附錄，所以同步版與背景版寫出的檔案逐位元相同，可互相比對 SHA256 或互相載入。
 void write_job(const server_doc_cache_job & job, const std::string & tmp) {
+    if (job.packed.size() % sizeof(llama_token) != 0 || job.packed.size() / sizeof(llama_token) > 0xffffffffULL) {
+        throw std::runtime_error("invalid prompt token blob");
+    }
+    if (job.target_offset > job.target.size()) {
+        throw std::runtime_error("invalid state snapshot offset");
+    }
     std::ofstream out(std::filesystem::u8path(tmp), std::ios::binary | std::ios::trunc);
     if (!out) {
         throw std::runtime_error("cannot open state temporary file");
     }
-    put(out, server_doc_cache_writer::magic);
-    put(out, server_doc_cache_writer::version);
-    put(out, uint64_t(job.packed.size() / sizeof(llama_token)));
-    out.write(job.packed.data(), job.packed.size());
-    put_buffer(out, job.target);
-    // DenseX: retain the existing checkpoint and draft appendix layout, including empty headers.
-    put(out, ckpt_magic);
-    put(out, uint32_t(1));
-    put(out, uint32_t(job.checkpoints.size()));
-    for (const auto & cur : job.checkpoints) {
-        put(out, cur.n_tokens);
-        put(out, cur.pos_min);
-        put(out, cur.pos_max);
-        put_buffer(out, cur.data_tgt);
-        put_buffer(out, cur.data_dft);
-        put_buffer(out, cur.data_spec);
+    put(out, uint32_t(LLAMA_STATE_SEQ_MAGIC));
+    put(out, uint32_t(LLAMA_STATE_SEQ_VERSION));
+    put(out, uint32_t(job.packed.size() / sizeof(llama_token)));
+    out.write(job.packed.data(), (std::streamsize) job.packed.size());
+    out.write(reinterpret_cast<const char *>(job.target.data() + job.target_offset),
+              (std::streamsize) (job.target.size() - job.target_offset));
+    // DenseX: 同步版在清單為空時不寫這段附錄，這裡也必須略過。
+    if (!job.checkpoints.empty()) {
+        put(out, ckpt_magic);
+        put(out, uint32_t(1));
+        put(out, uint32_t(job.checkpoints.size()));
+        for (const auto & cur : job.checkpoints) {
+            put(out, cur.n_tokens);
+            put(out, cur.pos_min);
+            put(out, cur.pos_max);
+            put_buffer(out, cur.data_tgt);
+            put_buffer(out, cur.data_dft);
+            put_buffer(out, cur.data_spec);
+        }
     }
-    put(out, draft_magic);
-    put(out, uint32_t(1));
-    put_buffer(out, job.draft);
-    put_buffer(out, job.spec);
+    if (!job.draft.empty() || !job.spec.empty()) {
+        put(out, draft_magic);
+        put(out, uint32_t(1));
+        put_buffer(out, job.draft);
+        put_buffer(out, job.spec);
+    }
     close_checked(out);
     std::ofstream tok(std::filesystem::u8path(tmp + ".tok.tmp"), std::ios::binary | std::ios::trunc);
     if (!tok) {
@@ -157,12 +170,14 @@ void server_doc_cache_writer::run() {
         auto done = std::make_unique<server_doc_cache_result>();
         done->path = job->path;
         done->tmp = job->path + "." + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".tmp";
+        const int64_t t_start = ggml_time_us();
         try {
             write_job(*job, done->tmp);
             done->bytes = size_t(std::filesystem::file_size(std::filesystem::u8path(done->tmp)));
         } catch (const std::exception & err) {
             done->error = err.what();
         }
+        done->write_us = ggml_time_us() - t_start;
         job.reset();
         lock.lock();
         result = std::move(done);
@@ -219,7 +234,7 @@ size_t server_doc_cache_writer::read_target(const std::string & path, llama_toke
     };
     uint32_t m = 0, v = 0;
     uint64_t n = 0;
-    if (!read(&m, 4) || m != magic || !read(&v, 4) || v != version ||
+    if (!read(&m, 4) || m != legacy_magic || !read(&v, 4) || v != legacy_version ||
         !read(&n, 8) || n > 10000000 || n > (size - pos) / sizeof(llama_token)) {
         return 0;
     }

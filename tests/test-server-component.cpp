@@ -443,6 +443,7 @@ static void test_decision_escape(testing & t) {
 
 // DenseX: real detached I/O, bounded admission, publication and failure without a model/GPU.
 static void test_doc_cache_async(testing & t) {
+    ggml_time_init(); // 寫入執行緒用 ggml_time_us 計時；這個測試沒有 llama_backend_init 幫它初始化時鐘
     namespace fs = std::filesystem;
     const char * base = std::getenv("DENSEX_DOCCACHE_TEST_DIR");
     const auto dir = (base ? fs::u8path(base) : fs::temp_directory_path()) /
@@ -474,7 +475,8 @@ static void test_doc_cache_async(testing & t) {
     job->settings = 123;
     job->packed.resize(2 * sizeof(llama_token), 0);
     job->tokens = {10, 20};
-    job->target = {1, 2, 3};
+    job->target = {0, 0, 0, 0, 1, 2, 3}; // DenseX: 前 4 byte 當作 io 標頭，只有它後面的內容會被寫進檔案
+    job->target_offset = 4;
     common_prompt_checkpoint ckpt;
     ckpt.n_tokens = 2;
     ckpt.pos_min = 0;
@@ -494,26 +496,106 @@ static void test_doc_cache_async(testing & t) {
     t.assert_equal("no prefix candidate before publication", size_t(0), sidecars);
     t.assert_true("publish", done && writer.publish(*done));
     t.assert_true("sidecar published", fs::exists(fs::u8path(path + ".tok")));
+    // DenseX #88: 背景寫入器必須產生同步版的檔案佈局（含略過 io 標頭），兩個寫入器的檔案才能互相比對與互換。
+    {
+        std::ifstream in(fs::u8path(path), std::ios::binary);
+        uint32_t u32 = 0;
+        in.read(reinterpret_cast<char *>(&u32), sizeof(u32));
+        t.assert_equal("legacy sequence magic", uint32_t(LLAMA_STATE_SEQ_MAGIC), u32);
+        in.read(reinterpret_cast<char *>(&u32), sizeof(u32));
+        t.assert_equal("legacy sequence version", uint32_t(LLAMA_STATE_SEQ_VERSION), u32);
+        in.read(reinterpret_cast<char *>(&u32), sizeof(u32));
+        t.assert_equal("legacy token count", uint32_t(2), u32);
+        std::vector<char> blob(2 * sizeof(llama_token));
+        in.read(blob.data(), (std::streamsize) blob.size());
+        t.assert_true("token blob", blob == std::vector<char>(2 * sizeof(llama_token), 0));
+        std::vector<uint8_t> state(3);
+        in.read(reinterpret_cast<char *>(state.data()), (std::streamsize) state.size());
+        t.assert_true("io header skipped", state == std::vector<uint8_t>({1, 2, 3}));
+        int64_t n_tokens = 0;
+        int32_t pos_min = -1;
+        int32_t pos_max = -1;
+        in.read(reinterpret_cast<char *>(&u32), sizeof(u32));
+        t.assert_equal("checkpoint appendix magic", uint32_t(0x504b4353), u32);
+        in.read(reinterpret_cast<char *>(&u32), sizeof(u32));
+        t.assert_equal("checkpoint appendix version", uint32_t(1), u32);
+        in.read(reinterpret_cast<char *>(&u32), sizeof(u32));
+        t.assert_equal("checkpoint appendix count", uint32_t(1), u32);
+        in.read(reinterpret_cast<char *>(&n_tokens), sizeof(n_tokens));
+        in.read(reinterpret_cast<char *>(&pos_min), sizeof(pos_min));
+        in.read(reinterpret_cast<char *>(&pos_max), sizeof(pos_max));
+        t.assert_equal("checkpoint tokens", int64_t(2), n_tokens);
+        t.assert_equal("checkpoint pos min", int32_t(0), pos_min);
+        t.assert_equal("checkpoint pos max", int32_t(1), pos_max);
+        uint64_t n = 0;
+        in.read(reinterpret_cast<char *>(&n), sizeof(n));
+        t.assert_equal("checkpoint target size", uint64_t(2), n);
+        std::vector<uint8_t> buf(n);
+        in.read(reinterpret_cast<char *>(buf.data()), (std::streamsize) n);
+        t.assert_true("checkpoint target bytes", buf == std::vector<uint8_t>({4, 5}));
+        for (int k = 0; k < 2; ++k) {
+            in.read(reinterpret_cast<char *>(&n), sizeof(n));
+            t.assert_equal("empty checkpoint blob", uint64_t(0), n);
+        }
+        in.read(reinterpret_cast<char *>(&u32), sizeof(u32));
+        t.assert_equal("draft appendix magic", uint32_t(0x54464453), u32);
+        in.read(reinterpret_cast<char *>(&u32), sizeof(u32));
+        t.assert_equal("draft appendix version", uint32_t(1), u32);
+        in.read(reinterpret_cast<char *>(&n), sizeof(n));
+        t.assert_equal("draft state size", uint64_t(2), n);
+        std::vector<uint8_t> draft(n);
+        in.read(reinterpret_cast<char *>(draft.data()), (std::streamsize) n);
+        t.assert_true("draft state bytes", draft == std::vector<uint8_t>({6, 7}));
+        in.read(reinterpret_cast<char *>(&n), sizeof(n));
+        t.assert_equal("spec state size", uint64_t(1), n);
+        std::vector<uint8_t> spec(n);
+        in.read(reinterpret_cast<char *>(spec.data()), (std::streamsize) n);
+        t.assert_true("spec state bytes", spec == std::vector<uint8_t>({8}));
+        t.assert_true("no bytes after the draft appendix", in.peek() == std::char_traits<char>::eof());
+    }
+    // DenseX: 舊 #53 DCD2 檔仍必須讀得到，否則更新後那些快取會直接失效。
+    const auto legacy = dir / "legacy-dcd2.bin";
+    {
+        std::ofstream out(legacy, std::ios::binary);
+        const uint32_t prefix[] = {writer.legacy_magic, writer.legacy_version};
+        const uint64_t packed_len = 2; // DCD2 的欄位是 token 數，不是位元組數
+        const uint64_t target_len = 3;
+        const llama_token toks[2] = {10, 20};
+        const uint32_t ckpt_hdr[] = {0x504b4353, 1, 0};
+        const uint32_t draft_hdr[] = {0x54464453, 1};
+        const uint64_t empty[] = {0, 0};
+        const uint8_t target_bytes[3] = {1, 2, 3};
+        out.write(reinterpret_cast<const char *>(prefix), sizeof(prefix));
+        out.write(reinterpret_cast<const char *>(&packed_len), sizeof(packed_len));
+        out.write(reinterpret_cast<const char *>(toks), sizeof(toks));
+        out.write(reinterpret_cast<const char *>(&target_len), sizeof(target_len));
+        out.write(reinterpret_cast<const char *>(target_bytes), sizeof(target_bytes));
+        out.write(reinterpret_cast<const char *>(ckpt_hdr), sizeof(ckpt_hdr));
+        out.write(reinterpret_cast<const char *>(draft_hdr), sizeof(draft_hdr));
+        out.write(reinterpret_cast<const char *>(empty), sizeof(empty));
+    }
     llama_tokens packed;
     std::vector<uint8_t> target;
-    t.assert_true("versioned format accepted", writer.read_target(path, packed, target) != 0);
-    t.assert_true("target bytes detached", target == std::vector<uint8_t>({1, 2, 3}));
-    t.assert_equal("packed count", size_t(2), packed.size());
-    const auto corrupt = dir / "truncated.bin";
-    std::ifstream src(fs::u8path(path), std::ios::binary);
-    std::ofstream dst(corrupt, std::ios::binary);
-    char header[20];
-    src.read(header, sizeof(header));
-    dst.write(header, sizeof(header));
-    dst.close();
-    t.assert_equal("truncated container is a miss", size_t(0), writer.read_target(corrupt.u8string(), packed, target));
+    t.assert_true("legacy DCD2 still readable", writer.read_target(legacy.u8string(), packed, target) != 0);
+    t.assert_equal("legacy DCD2 packed count", size_t(2), packed.size());
+    t.assert_true("legacy DCD2 target bytes", target == std::vector<uint8_t>({1, 2, 3}));
+    const auto truncated = dir / "truncated-dcd2.bin";
+    {
+        std::ifstream src(legacy, std::ios::binary);
+        std::ofstream dst(truncated, std::ios::binary);
+        char header[20];
+        src.read(header, sizeof(header));
+        dst.write(header, sizeof(header));
+    }
+    t.assert_equal("truncated container is a miss", size_t(0), writer.read_target(truncated.u8string(), packed, target));
     const auto forged = dir / "oversized-length.bin";
-    std::ofstream bad(forged, std::ios::binary);
-    const uint32_t prefix[] = {writer.magic, writer.version};
-    const uint64_t lengths[] = {0, UINT64_MAX};
-    bad.write(reinterpret_cast<const char *>(prefix), sizeof(prefix));
-    bad.write(reinterpret_cast<const char *>(lengths), sizeof(lengths));
-    bad.close();
+    {
+        std::ofstream bad(forged, std::ios::binary);
+        const uint32_t prefix[] = {writer.legacy_magic, writer.legacy_version};
+        const uint64_t lengths[] = {0, UINT64_MAX};
+        bad.write(reinterpret_cast<const char *>(prefix), sizeof(prefix));
+        bad.write(reinterpret_cast<const char *>(lengths), sizeof(lengths));
+    }
     t.assert_equal("corrupt length rejected before allocation", size_t(0), writer.read_target(forged.u8string(), packed, target));
     t.assert_true("never overwrite existing entry", !writer.publish(*done));
     t.assert_true("capacity after completion", writer.reserve(100, UINT64_MAX));

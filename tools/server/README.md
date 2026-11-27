@@ -3,9 +3,17 @@
 ## DenseX experimental background document cache
 
 `--densex-doc-cache-async` (`LLAMA_ARG_DENSEX_DOC_CACHE_ASYNC=1`) is off by default and requires
-`--densex-doc-cache PATH`. It captures the complete prompt-boundary state on the model thread, then writes
-an owning host snapshot in a background thread. GPU readback and snapshot copying still precede generation;
-this option does not promise a first-token latency improvement.
+`--densex-doc-cache PATH`. The model thread copies the complete prompt-boundary state to host memory and
+hands it to a background thread, which writes it. Only the disk write leaves the model thread: the GPU
+readback, the checkpoint copy and the host-buffer allocation still happen before the first token. On the
+120K desktop profile a 2768 MiB entry took 6.8-7.3 s to save synchronously, about 0.25 s of which was the
+GPU readback; the capture takes about 0.95 s and the write (6.9-7.2 s) then runs in the background, so
+cold-read TTFT fell from a median of 453.73 s to 446.37 s in three interleaved runs each.
+
+The background writer emits the same file layout as the synchronous writer, so the two produce
+byte-identical `.bin`/`.tok` pairs for the same prompt (SHA256 compared at 4K, 32K and 120K) and the same
+loader restores both. The loader also still accepts the older DCD2 containers written by the first async
+implementation.
 
 Only one capture/write may be in flight, with a 3072 MiB snapshot cap and at least 2048 MiB physical RAM
 headroom required. Busy, oversized or failed captures skip caching without a synchronous fallback. A reply
@@ -14,10 +22,10 @@ restarting. The writer never accesses live contexts or slots. Cancellation and s
 already captured valid prompt. Graceful shutdown/sleep drains the writer; forced termination may leave
 temporary files, which are ignored. Write/publish failures retain temporary files for inspection.
 
-The loader accepts both legacy synchronous files and versioned detached containers, including the existing
-token sidecars for prefix hits. Detached restore stages the target blob in RAM and releases it before
-restoring appendices. Each cache directory supports one writing server process; flush/rename is not a
-power-loss durability guarantee. Without this option the existing synchronous writer remains in use.
+The loader accepts both the current files and the older DCD2 containers, including the token sidecars for
+prefix hits. Detached restore stages the target blob in RAM and releases it before restoring appendices.
+Each cache directory supports one writing server process; flush/rename is not a power-loss durability
+guarantee. Without this option the existing synchronous writer remains in use.
 
 Fast, lightweight, pure C/C++ HTTP server based on [httplib](https://github.com/yhirose/cpp-httplib), [nlohmann::json](https://github.com/nlohmann/json) and **llama.cpp**.
 
