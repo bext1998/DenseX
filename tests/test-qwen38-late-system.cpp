@@ -1,8 +1,8 @@
 // DenseX（issue #88）：Qwen 3.8 出廠範本對「不是第一則」的 system 訊息 raise_exception，工具鏈在中途插入
 // system 就會 500。common/chat.cpp 在載入模型範本時把那段分支換成就地渲染；這個測試驗證替換的正確性與邊界。
-// 輸入：只有 vocab 的 GGUF（路徑列在 argv[1]，含出廠 chat template）與修好版對照檔（argv[2]）。
+// 輸入：只有 vocab 的 GGUF（argv[1]，含出廠 chat template）與修好版對照檔（argv[2]）。
 // 輸出：逐字比對與各案例結果；全過時最後一行 QWEN38_LATE_SYSTEM_OK，否則 QWEN38_LATE_SYSTEM_FAILED 並回傳 1。
-// 開關：DENSEX_LATE_SYSTEM（預設 1；0 = 不修，維持出廠行為）。
+// 開關：DENSEX_LATE_SYSTEM（預設 1；0 = 不修，維持出廠行為）。測試一開始先清掉這個變數，不受外部 shell 影響。
 // 依賴：common/chat.cpp 的 densex_chat_template_fix_late_system()、common_chat_templates_init/apply。
 
 #include <cstdlib>
@@ -54,10 +54,19 @@ static std::string normalize_newlines(std::string s) {
     return s;
 }
 
+// 清掉開關，讓「未設定＝預設開」這條檢查跟呼叫端 shell 的環境無關
+static void unset_late_system_env() {
+#ifdef _WIN32
+    _putenv_s("DENSEX_LATE_SYSTEM", "");
+#else
+    unsetenv("DENSEX_LATE_SYSTEM");
+#endif
+}
+
 static std::string render(const common_chat_templates * tmpls, common_chat_templates_inputs inputs) {
-    inputs.use_jinja           = true;
-    inputs.add_generation_prompt = true;
-    inputs.now                 = std::chrono::system_clock::from_time_t(1700000000); // 固定時間，兩邊才可比
+    inputs.use_jinja = true;
+    inputs.now       = std::chrono::system_clock::from_time_t(1700000000); // 固定時間，兩邊才可比
+    // add_generation_prompt 由呼叫端決定，這裡不覆寫（08_no_generation_prompt 靠它才是 false）
     return common_chat_templates_apply(tmpls, inputs).prompt.str();
 }
 
@@ -90,11 +99,41 @@ static std::string render_direct_jinja_error(const std::string & tmpl, const std
     }
 }
 
+// 數出「完整的一個獨立 system 回合」出現幾次：'<|im_start|>system\n' + content + '<|im_end|>\n'。
+// 內容要完全相符才算，所以同時驗證了結尾的 <|im_end|>\n；先檢查剩餘長度再切片，避免 out_of_range。
+static int count_full_system_turns(const std::string & out, const std::string & content) {
+    const std::string turn = "<|im_start|>system\n" + content + "<|im_end|>\n";
+    int               n    = 0;
+    for (size_t pos = 0; pos + turn.size() <= out.size();) {
+        const size_t hit = out.find(turn, pos);
+        if (hit == std::string::npos) {
+            break;
+        }
+        ++n;
+        pos = hit + turn.size();
+    }
+    return n;
+}
+
+// 有開頭但沒結尾、或內容為空的 system 回合（不該出現）
+static bool has_empty_system_turn(const std::string & out) {
+    return out.find("<|im_start|>system\n<|im_end|>") != std::string::npos;
+}
+
+// 單純數子串出現幾次（不用來比對整回合）
+static int count_sub(const std::string & out, const std::string & sub) {
+    int n = 0;
+    for (size_t pos = 0; (pos = out.find(sub, pos)) != std::string::npos; pos += sub.size()) {
+        ++n;
+    }
+    return n;
+}
+
 struct shape_case {
-    std::string                      name;
-    std::vector<common_chat_msg>     messages;
-    std::vector<common_chat_tool>    tools;
-    bool                             add_generation_prompt;
+    std::string                   name;
+    std::vector<common_chat_msg>  messages;
+    std::vector<common_chat_tool> tools;
+    bool                          add_generation_prompt;
 };
 
 static common_chat_msg msg(const std::string & role, const std::string & content) {
@@ -102,6 +141,11 @@ static common_chat_msg msg(const std::string & role, const std::string & content
     m.role    = role;
     m.content = content;
     return m;
+}
+
+static std::vector<common_chat_tool> one_tool() {
+    return { { "get_weather", "Get current weather",
+               R"({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]})" } };
 }
 
 static std::vector<shape_case> normal_shapes() {
@@ -125,8 +169,7 @@ static std::vector<shape_case> normal_shapes() {
     // 4. 有工具定義
     out.push_back({ "04_tools_defined",
                     { msg("system", "You may use tools."), msg("user", "What is the weather in Taipei?") },
-                    { { "get_weather", "Get current weather", R"({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]})" } },
-                    true });
+                    one_tool(), true });
 
     // 5. 工具呼叫 + 工具結果
     {
@@ -137,8 +180,7 @@ static std::vector<shape_case> normal_shapes() {
         res.tool_call_id     = "call00001";
         out.push_back({ "05_tool_call_and_result",
                         { msg("system", "You may use tools."), msg("user", "Weather in Taipei?"), call, res },
-                        { { "get_weather", "Get current weather", R"({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]})" } },
-                        true });
+                        one_tool(), true });
     }
 
     // 6. 一次工具呼叫、兩個工具結果
@@ -154,8 +196,7 @@ static std::vector<shape_case> normal_shapes() {
         r2.tool_call_id      = "call00002";
         out.push_back({ "06_two_tool_results",
                         { msg("user", "Weather in Taipei and Kaohsiung?"), call, r1, r2 },
-                        { { "get_weather", "Get current weather", R"({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]})" } },
-                        true });
+                        one_tool(), true });
     }
 
     // 7. 歷史裡有思考內容（開思考的請求會渲染它）
@@ -169,7 +210,7 @@ static std::vector<shape_case> normal_shapes() {
                       msg("user", "And 3+3?") },
                     {}, true });
 
-    // 8. 不加 generation prompt
+    // 8. 不加 generation prompt（add_generation_prompt=false，渲染結果不該出現結尾的 <|im_start|>assistant）
     out.push_back({ "08_no_generation_prompt",
                     { msg("system", "You are concise."), msg("user", "Hello"), msg("assistant", "Hi") },
                     {}, false });
@@ -190,12 +231,28 @@ static std::map<std::string, std::string> kwargs_off() {
 }
 
 static std::map<std::string, std::string> kwargs_think_medium() {
-    return { { "reasoning_effort", R"("medium")" } }; // 開思考一律 medium（專案規則 8）
+    return { { "reasoning_effort", R"("medium")" } }; // 開思考一律 medium（AGENTS 規則第 8 條）
+}
+
+struct kwargs_case {
+    std::string                      name;
+    std::map<std::string, std::string> kwargs;
+    bool                             enable_thinking;
+};
+
+static const std::vector<kwargs_case> & kwargs_cases() {
+    static const std::vector<kwargs_case> cases = {
+        { "thinking_off", kwargs_off(), false },
+        { "thinking_medium", kwargs_think_medium(), true },
+    };
+    return cases;
 }
 
 int main(int argc, char ** argv) {
     std::string vocab_path = argc > 1 ? argv[1] : "models/ggml-vocab-qwen38.gguf";
     std::string fixed_path = argc > 2 ? argv[2] : "models/templates/Qwen3.8-27B.jinja";
+
+    unset_late_system_env();
 
     const std::string fixed_file = normalize_newlines(read_file_or_empty(fixed_path));
     if (fixed_file.empty()) {
@@ -219,25 +276,25 @@ int main(int argc, char ** argv) {
     const std::string tmpl_raw = tmpl_raw_c;
 
     std::cout << "\n=== 1. switch and match rules ===\n";
-    check(densex_chat_template_late_system_enabled(), "DENSEX_LATE_SYSTEM unset defaults to on");
+    check(densex_chat_template_late_system_enabled(), "DENSEX_LATE_SYSTEM cleared -> defaults to on");
 
     common_set_env("DENSEX_LATE_SYSTEM", "0");
     check(!densex_chat_template_late_system_enabled(), "DENSEX_LATE_SYSTEM=0 turns the fix off");
     auto tmpls_off = common_chat_templates_init(model, "");
     check(common_chat_templates_source(tmpls_off.get()) == tmpl_raw, "switch off: model template unchanged");
 
-    common_set_env("DENSEX_LATE_SYSTEM", "1");
-    check(densex_chat_template_late_system_enabled(), "DENSEX_LATE_SYSTEM=1 turns the fix on");
+    unset_late_system_env();
+    check(densex_chat_template_late_system_enabled(), "DENSEX_LATE_SYSTEM unset again -> on");
     auto tmpls_on = common_chat_templates_init(model, "");
     check(common_chat_templates_source(tmpls_on.get()) == fixed_file,
           "default on: patched model template == " + fixed_path);
 
-    // 使用者自己指定的範本不改動（開關這時是 1）
+    // 使用者自己指定的範本不改動（這時開關是預設開）
     auto tmpls_user = common_chat_templates_init(model, tmpl_raw);
     check(common_chat_templates_source(tmpls_user.get()) == tmpl_raw, "--chat-template: model template untouched");
 
     // 找不到那段分支就不改動
-    std::string other = "{% for message in messages %}{{ message.role }}{% endfor %}";
+    std::string other        = "{% for message in messages %}{{ message.role }}{% endfor %}";
     std::string other_before = other;
     check(!densex_chat_template_fix_late_system(other), "template without the raise branch: fix not applied");
     check(other == other_before, "template without the raise branch: content unchanged");
@@ -245,19 +302,19 @@ int main(int argc, char ** argv) {
     check(densex_chat_template_fix_late_system(raw_copy), "model template: fix applied");
     check(raw_copy == fixed_file, "model template: patched text == fixed reference file");
 
+    // 非數字值跟其他 DENSEX_* 開關一樣：atoi() 算 0 → 關閉（log 會印出實際值，不會假裝是 0）
+    common_set_env("DENSEX_LATE_SYSTEM", "true");
+    check(!densex_chat_template_late_system_enabled(),
+          "DENSEX_LATE_SYSTEM=true is off under atoi() rules, same as the other switches");
+    auto tmpls_nonnum = common_chat_templates_init(model, "");
+    check(common_chat_templates_source(tmpls_nonnum.get()) == tmpl_raw,
+          "non-numeric value: template unchanged and the log shows DENSEX_LATE_SYSTEM=true");
+    unset_late_system_env();
+
     std::cout << "\n=== 2. normal shapes: shipped template vs auto-patched, byte for byte ===\n";
-    struct kwargs_case {
-        std::string                  name;
-        std::map<std::string, std::string> kwargs;
-        bool                         enable_thinking;
-    };
-    const std::vector<kwargs_case> kwargs_cases = {
-        { "thinking_off", kwargs_off(), false },
-        { "thinking_medium", kwargs_think_medium(), true },
-    };
     size_t compared = 0;
     for (const auto & shape : normal_shapes()) {
-        for (const auto & kw : kwargs_cases) {
+        for (const auto & kw : kwargs_cases()) {
             auto make_inputs = [&]() {
                 common_chat_templates_inputs inputs;
                 inputs.messages              = shape.messages;
@@ -272,6 +329,18 @@ int main(int argc, char ** argv) {
             ++compared;
             check(before == after && !before.empty(),
                   shape.name + " / " + kw.name + ": identical (" + std::to_string(after.size()) + " bytes)");
+            if (!shape.add_generation_prompt) {
+                // 真的以 add_generation_prompt=false 渲染：結尾是某個回合的 <|im_end|>\n，而且跟 true 的渲染不同
+                auto with_gen        = make_inputs();
+                with_gen.add_generation_prompt = true;
+                const std::string with_gen_out = render(tmpls_on.get(), with_gen);
+                const bool ends_closed = after.size() >= 11 &&
+                                         after.compare(after.size() - 11, 11, "<|im_end|>\n") == 0;
+                check(ends_closed && with_gen_out != after && with_gen_out.size() > after.size(),
+                      shape.name + " / " + kw.name + ": rendered with add_generation_prompt=false ("
+                          + std::to_string(after.size()) + " vs " + std::to_string(with_gen_out.size())
+                          + " bytes when true)");
+            }
         }
     }
 
@@ -280,15 +349,17 @@ int main(int argc, char ** argv) {
         std::string                   name;
         std::vector<common_chat_msg>  messages;
         std::vector<common_chat_tool> tools;
-        int                           late_turns; // 應該多出幾個獨立 system 回合
+        std::vector<std::string>      markers; // 每一段中途 system 的內容（也是該回合應該出現的 content）
     };
     std::vector<late_case> late_cases;
+
     late_cases.push_back({ "L1_between_user_and_assistant",
                            { msg("system", "Opening rules."),
                              msg("user", "First question"),
                              msg("system", "LATE MARKER 1"),
                              msg("assistant", "First answer") },
-                           {}, 1 });
+                           {}, { "LATE MARKER 1" } });
+
     late_cases.push_back({ "L2_after_tool_result",
                            { msg("user", "Weather in Taipei?"),
                              [] {
@@ -304,44 +375,89 @@ int main(int argc, char ** argv) {
                              }(),
                              msg("system", "LATE MARKER 2"),
                              msg("user", "And tomorrow?") },
-                           { { "get_weather", "Get current weather",
-                               R"({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]})" } },
-                           1 });
+                           one_tool(), { "LATE MARKER 2" } });
+
     late_cases.push_back({ "L3_last_before_generation_prompt",
                            { msg("system", "Opening rules."), msg("user", "Hello"), msg("assistant", "Hi"),
                              msg("system", "LATE MARKER 3") },
-                           {}, 1 });
+                           {}, { "LATE MARKER 3" } });
+
     late_cases.push_back({ "L4_two_late_systems",
                            { msg("system", "Opening rules."), msg("user", "One"),
                              msg("system", "LATE MARKER A"), msg("assistant", "Two"),
                              msg("system", "LATE MARKER B"), msg("user", "Three") },
-                           {}, 2 });
+                           {}, { "LATE MARKER A", "LATE MARKER B" } });
 
+    // 兩個 tool 結果中間夾一則 system（agy 審查補的形狀）
+    {
+        common_chat_msg call = msg("assistant", "");
+        call.tool_calls      = { { "get_weather", R"({"city":"Taipei"})", "call00001" },
+                                 { "get_weather", R"({"city":"Kaohsiung"})", "call00002" } };
+        common_chat_msg r1   = msg("tool", "Temperature: 27C");
+        r1.tool_name         = "get_weather";
+        r1.tool_call_id      = "call00001";
+        common_chat_msg r2   = msg("tool", "Temperature: 30C");
+        r2.tool_name         = "get_weather";
+        r2.tool_call_id      = "call00002";
+        late_cases.push_back({ "L5_tool_system_tool",
+                               { msg("user", "Weather in Taipei and Kaohsiung?"), call, r1,
+                                 msg("system", "LATE MARKER 5"), r2, msg("user", "Thanks") },
+                               one_tool(), { "LATE MARKER 5" } });
+    }
+
+    // 第二則是 developer（Codex 的實際形狀）：引擎在 apply 裡把 developer 對應成 system，所以是中途 system
+    late_cases.push_back({ "L6_developer_second",
+                           { msg("system", "Opening rules."),
+                             msg("developer", "LATE MARKER DEV"),
+                             msg("user", "Hello") },
+                           {}, { "LATE MARKER DEV" } });
+
+    // 空白的中途 system：不該輸出空回合（跟開頭 system 的 {%- if content %} 守門一致）
+    late_cases.push_back({ "L7_blank_late_system_dropped",
+                           { msg("system", "Opening rules."),
+                             msg("user", "Hello"),
+                             msg("system", "   \n  "),
+                             msg("assistant", "Hi") },
+                           {}, {} });
+
+    size_t late_checked = 0;
     for (const auto & c : late_cases) {
-        auto make_inputs = [&]() {
-            common_chat_templates_inputs inputs;
-            inputs.messages            = c.messages;
-            inputs.tools               = c.tools;
-            inputs.chat_template_kwargs = kwargs_off();
-            inputs.enable_thinking     = false;
-            return inputs;
-        };
-        const std::string err_off = render_error(tmpls_off.get(), make_inputs());
-        check(err_off.find("System message must be at the beginning.") != std::string::npos,
-              c.name + ": shipped template still rejects it (DENSEX_LATE_SYSTEM=0)");
-        const std::string err_on = render_error(tmpls_on.get(), make_inputs());
-        check(err_on.empty(), c.name + ": patched template renders without error");
-        if (err_on.empty()) {
-            const std::string out  = render(tmpls_on.get(), make_inputs());
-            const std::string head = "<|im_start|>system";
-            int                 turns = 0;
-            for (size_t pos = 0; (pos = out.find(head, pos)) != std::string::npos; pos += 1) {
-                // head 後面要接換行（10）再接 marker 內容，才算一個獨立 system 回合
-                if (out.compare(pos + head.size() + 1, 11, "LATE MARKER") == 0 && out[pos + head.size()] == 10) {
-                    turns++;
-                }
+        for (const auto & kw : kwargs_cases()) {
+            auto make_inputs = [&]() {
+                common_chat_templates_inputs inputs;
+                inputs.messages              = c.messages;
+                inputs.tools                 = c.tools;
+                inputs.add_generation_prompt = true;
+                inputs.chat_template_kwargs  = kw.kwargs;
+                inputs.enable_thinking       = kw.enable_thinking;
+                return inputs;
+            };
+            const std::string label = c.name + " / " + kw.name;
+            ++late_checked;
+
+            const std::string err_off = render_error(tmpls_off.get(), make_inputs());
+            check(err_off.find("System message must be at the beginning.") != std::string::npos,
+                  label + ": shipped template still rejects it (DENSEX_LATE_SYSTEM=0)");
+
+            const std::string err_on = render_error(tmpls_on.get(), make_inputs());
+            check(err_on.empty(), label + ": patched template renders without error");
+            if (!err_on.empty()) {
+                continue;
             }
-            check(turns == c.late_turns, c.name + ": rendered as " + std::to_string(turns) + " own system turn(s)");
+            const std::string out = render(tmpls_on.get(), make_inputs());
+
+            int turns = 0;
+            for (const auto & marker : c.markers) {
+                const int n = count_full_system_turns(out, marker);
+                check(n == 1, label + ": '" + marker + "' rendered as exactly one own system turn closed by <|im_end|>\\n");
+                turns += n;
+            }
+            check(!has_empty_system_turn(out), label + ": no empty system turn in the prompt");
+            if (c.markers.empty()) {
+                // 沒有中途 system 回合：整個 prompt 只剩開頭那一則 system（這個案例沒帶工具，所以 tools 區塊不會出現）
+                check(count_sub(out, "<|im_start|>system\n") == 1,
+                      label + ": blank late system produced no turn (opening system kept)");
+            }
         }
     }
 
@@ -376,13 +492,15 @@ int main(int argc, char ** argv) {
             check(false, "mutation target (user turn output) found in the model template");
         } else {
             string_replace_all(mutated, user_branch, user_branch_extra_nl);
-            check(densex_chat_template_fix_late_system(mutated), "mutated template still matches the late-system branch");
+            check(densex_chat_template_fix_late_system(mutated),
+                  "mutated template still matches the late-system branch");
             auto tmpls_mut = common_chat_templates_init(nullptr, mutated);
-            const auto   shapes = normal_shapes();
+            const auto shapes = normal_shapes();
             common_chat_templates_inputs inputs;
-            inputs.messages             = shapes[2].messages; // 03_multi_turn
-            inputs.chat_template_kwargs = kwargs_off();
-            inputs.enable_thinking      = false;
+            inputs.messages              = shapes[2].messages; // 03_multi_turn
+            inputs.add_generation_prompt = true;
+            inputs.chat_template_kwargs  = kwargs_off();
+            inputs.enable_thinking       = false;
             const std::string baseline = render(tmpls_on.get(), inputs);
             const std::string broken   = render(tmpls_mut.get(), inputs);
             check(baseline != broken, "a normal shape with one extra newline is reported as a difference");
@@ -393,8 +511,9 @@ int main(int argc, char ** argv) {
     llama_backend_free();
 
     std::cout << "\n=== SUMMARY ===\n";
-    std::cout << "byte comparisons of normal shapes: " << compared << " (9 shapes x 2 kwargs groups)\n";
-    std::cout << "late system positions checked: " << late_cases.size() << "\n";
+    std::cout << "byte comparisons of normal shapes: " << compared / 2 << " shapes x " << kwargs_cases().size()
+              << " kwargs groups = " << compared << " comparisons\n";
+    std::cout << "late system cases x kwargs groups: " << late_checked << "\n";
     if (failures) {
         std::cout << "QWEN38_LATE_SYSTEM_FAILED failures=" << failures << "\n";
         return 1;
